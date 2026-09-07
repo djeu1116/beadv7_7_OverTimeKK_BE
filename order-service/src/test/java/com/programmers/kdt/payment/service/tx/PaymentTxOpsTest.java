@@ -5,6 +5,7 @@ import com.programmers.kdt.payment.entity.Payment;
 import com.programmers.kdt.payment.entity.PaymentStatus;
 import com.programmers.kdt.payment.exception.PaymentErrorCode;
 import com.programmers.kdt.payment.repository.PaymentRepository;
+import com.programmers.kdt.payment.service.PointService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -26,12 +27,14 @@ class PaymentTxOpsTest {
 
     @Mock
     private PaymentRepository paymentRepository;
+    @Mock
+    private PointService pointService;
 
     private PaymentTxOps paymentTxOps;
 
     @BeforeEach
     void setUp() {
-        paymentTxOps = new PaymentTxOps(paymentRepository);
+        paymentTxOps = new PaymentTxOps(paymentRepository, pointService);
     }
 
     private Payment readyPayment(Long id) {
@@ -49,12 +52,26 @@ class PaymentTxOpsTest {
         void commitsPendingBeforePgCall() {
             Payment payment = readyPayment(1L);
             when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+            when(pointService.findUsedAmount(any())).thenReturn(3000L);
 
-            Payment result = paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1");
+            PaymentTxOps.ReadyPaymentContext result = paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1");
 
-            assertThat(result.getPaymentKey()).isEqualTo("PG_KEY_1");
-            assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.CONFIRM_PENDING_VERIFICATION);
+            assertThat(result.payment().getPaymentKey()).isEqualTo("PG_KEY_1");
+            assertThat(result.payment().getPaymentStatus()).isEqualTo(PaymentStatus.CONFIRM_PENDING_VERIFICATION);
+            assertThat(result.usedPoint()).isEqualTo(3000L);
             verify(paymentRepository).saveAndFlush(payment);
+        }
+
+        @Test
+        @DisplayName("사용한 포인트가 없으면(null) 0으로 대체해서 반환한다.")
+        void noUsedPoint_defaultsToZero() {
+            Payment payment = readyPayment(1L);
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+            when(pointService.findUsedAmount(any())).thenReturn(null);
+
+            PaymentTxOps.ReadyPaymentContext result = paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1");
+
+            assertThat(result.usedPoint()).isEqualTo(0L);
         }
 
         @Test

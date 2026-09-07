@@ -5,6 +5,8 @@ import com.programmers.kdt.payment.entity.Payment;
 import com.programmers.kdt.payment.entity.PaymentStatus;
 import com.programmers.kdt.payment.exception.PaymentErrorCode;
 import com.programmers.kdt.payment.repository.PaymentRepository;
+import com.programmers.kdt.payment.service.PointService;
+import com.programmers.kdt.payment.service.util.PointEventIds;
 import lombok.RequiredArgsConstructor;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Component;
@@ -16,9 +18,14 @@ import org.springframework.transaction.annotation.Transactional;
 public class PaymentTxOps {
 
     private final PaymentRepository paymentRepository;
+    private final PointService pointService;
 
+    public record ReadyPaymentContext(Payment payment, Long usedPoint) {
+    }
+
+    // tx1 + 포인트 조회를 한 트랜잭션으로 묶음 — PG 호출 전 MySQL 왕복을 2회에서 1회로 줄임
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public Payment assignKeyAndCommit(Long paymentId, String transactionKey) {
+    public ReadyPaymentContext assignKeyAndCommit(Long paymentId, String transactionKey) {
         Payment payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new BusinessException(PaymentErrorCode.PAYMENT_NOT_FOUND));
 
@@ -33,7 +40,9 @@ public class PaymentTxOps {
         } catch (ObjectOptimisticLockingFailureException e) {
             throw new BusinessException(PaymentErrorCode.PAYMENT_CONCURRENT_MODIFICATION);
         }
-        return payment;
+
+        Long usedPoint = pointService.findUsedAmount(PointEventIds.useEventId(payment.getOrderId()));
+        return new ReadyPaymentContext(payment, usedPoint == null ? 0L : usedPoint);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)

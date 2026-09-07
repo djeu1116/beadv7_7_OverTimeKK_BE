@@ -42,7 +42,7 @@ public class PaymentReconciliationIntegrationTest {
     @BeforeEach
     void setUp() {
         mockPgClient.reset();
-        PaymentTxOps paymentTxOps = new PaymentTxOps(paymentRepository);
+        PaymentTxOps paymentTxOps = new PaymentTxOps(paymentRepository, pointService);
         scheduler = new PaymentReconciliationScheduler(
                 paymentRepository, mockPgClient, paymentTxOps, paymentResultEventPublisher, pointService);
     }

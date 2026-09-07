@@ -1,16 +1,18 @@
 package com.programmers.kdt.payment.service;
 
 import com.programmers.kdt.common.exception.BusinessException;
-import com.programmers.kdt.payment.entity.key.IdempotencyKey;
 import com.programmers.kdt.payment.exception.PaymentErrorCode;
-import com.programmers.kdt.payment.repository.IdempotencyKeyRepository;
-import com.programmers.kdt.payment.service.tx.IdempotencyKeyTxOps;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.redis.connection.SetCondition;
+import org.springframework.data.redis.core.RedisCallback;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.types.Expiration;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.ObjectMapper;
 
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Optional;
 
 @Slf4j
@@ -18,46 +20,72 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class IdempotencyKeyServiceImpl implements IdempotencyKeyService {
 
-    private final IdempotencyKeyRepository idempotencyKeyRepository;
-    private final IdempotencyKeyTxOps txOps;
+    private static final Duration TTL = Duration.ofMinutes(5);
 
-    @Override
-    public Optional<String> generate(String idempotencyKey, String requestHash) {
-        try {
-            txOps.tryInsert(idempotencyKey, requestHash);
-            return Optional.empty();
-        } catch (DataIntegrityViolationException e) { // 이미 있는 멱등키를 다시 저장하려고 하는 경우
-            IdempotencyKey existing = txOps.findFresh(idempotencyKey)
-                    .orElseThrow(() -> e);
+    private final StringRedisTemplate redisTemplate;
+    private final ObjectMapper objectMapper;
 
-            if (existing.isExpired()) {
-                txOps.expireAndReinsert(idempotencyKey, existing, requestHash);
-                return Optional.empty();
-            }
-
-            if (!existing.getRequestHash().equals(requestHash)) {
-                throw new BusinessException(PaymentErrorCode.IDEMPOTENCY_KEY_CONFLICT);
-            }
-
-            if (existing.getResponseBody() == null) {
-                throw new BusinessException(PaymentErrorCode.PAYMENT_ALREADY_EXISTS);
-            }
-
-            return Optional.of(existing.getResponseBody());
-        }
+    private record IdempotencyRecord(String requestHash, String responseBody) {
     }
 
     @Override
-    @Transactional
+    public Optional<String> generate(String idempotencyKey, String requestHash) {
+        String freshValue = toJson(new IdempotencyRecord(requestHash, null));
+        Boolean created = redisTemplate.opsForValue().setIfAbsent(idempotencyKey, freshValue, TTL);
+        if (Boolean.TRUE.equals(created)) {
+            return Optional.empty();
+        }
+
+        String existingJson = redisTemplate.opsForValue().get(idempotencyKey);
+        if (existingJson == null) {
+            // setIfAbsent 실패 직후 TTL 만료로 사라진 찰나의 경합 - 클라이언트가 재시도하도록 유도
+            throw new BusinessException(PaymentErrorCode.PAYMENT_ALREADY_EXISTS);
+        }
+
+        IdempotencyRecord existing = fromJson(existingJson);
+        if (!existing.requestHash().equals(requestHash)) {
+            throw new BusinessException(PaymentErrorCode.IDEMPOTENCY_KEY_CONFLICT);
+        }
+        if (existing.responseBody() == null) {
+            throw new BusinessException(PaymentErrorCode.PAYMENT_ALREADY_EXISTS);
+        }
+        return Optional.of(existing.responseBody());
+    }
+
+    @Override
     public void complete(String idempotencyKey, String responseBody) {
-        int updated = idempotencyKeyRepository.findById(idempotencyKey)
-                .map(key -> { key.complete(responseBody); return 1; })
-                .orElse(0);
-        log.info("[IDEMPOTENCY_COMPLETE] key={}, found={}, bodyLen={}", idempotencyKey, updated, responseBody == null ? -1 : responseBody.length());
+        String existingJson = redisTemplate.opsForValue().get(idempotencyKey);
+        if (existingJson == null) {
+            log.info("[IDEMPOTENCY_COMPLETE] key={}, found=0, bodyLen={}", idempotencyKey, responseBody == null ? -1 : responseBody.length());
+            return;
+        }
+
+        IdempotencyRecord existing = fromJson(existingJson);
+        String completedValue = toJson(new IdempotencyRecord(existing.requestHash(), responseBody));
+        setKeepingTtl(idempotencyKey, completedValue);
+        log.info("[IDEMPOTENCY_COMPLETE] key={}, found=1, bodyLen={}", idempotencyKey, responseBody == null ? -1 : responseBody.length());
     }
 
     @Override
     public void release(String idempotencyKey) {
-        txOps.delete(idempotencyKey);
+        redisTemplate.delete(idempotencyKey);
+    }
+
+    // TTL 그대로 유지한 채 값만 덮어쓰기 (complete() 시 5분 카운트가 재시작되면 안 됨)
+    private void setKeepingTtl(String key, String value) {
+        redisTemplate.execute((RedisCallback<Boolean>) connection -> connection.stringCommands().set(
+                key.getBytes(StandardCharsets.UTF_8),
+                value.getBytes(StandardCharsets.UTF_8),
+                SetCondition.upsert(),
+                Expiration.keepTtl()
+        ));
+    }
+
+    private String toJson(IdempotencyRecord record) {
+        return objectMapper.writeValueAsString(record);
+    }
+
+    private IdempotencyRecord fromJson(String json) {
+        return objectMapper.readValue(json, IdempotencyRecord.class);
     }
 }

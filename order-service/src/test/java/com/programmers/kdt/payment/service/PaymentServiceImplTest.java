@@ -382,7 +382,7 @@ class PaymentServiceImplTest {
             when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
                     .thenAnswer(inv -> {
                         payment.markPending();
-                        return payment;
+                        return new PaymentTxOps.ReadyPaymentContext(payment, 0L);
                     });
             when(paymentTxOps.applyConfirmResult(eq(1L), eq(PgOutcome.SUCCESS)))
                     .thenAnswer(inv -> {
@@ -408,7 +408,7 @@ class PaymentServiceImplTest {
             when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
                     .thenAnswer(inv -> {
                         payment.markPending();
-                        return payment;
+                        return new PaymentTxOps.ReadyPaymentContext(payment, 0L);
                     });
             when(paymentTxOps.applyConfirmResult(eq(1L), eq(PgOutcome.EXPLICIT_FAIL)))
                     .thenAnswer(inv -> {
@@ -468,7 +468,7 @@ class PaymentServiceImplTest {
             when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
                     .thenAnswer(inv -> {
                         payment.markPending();
-                        return payment;
+                        return new PaymentTxOps.ReadyPaymentContext(payment, 0L);
                     });
             when(paymentTxOps.applyConfirmResult(eq(1L), eq(PgOutcome.EXPLICIT_FAIL)))
                     .thenAnswer(inv -> {
@@ -490,7 +490,7 @@ class PaymentServiceImplTest {
             when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
                     .thenAnswer(inv -> {
                         payment.markPending();
-                        return payment;
+                        return new PaymentTxOps.ReadyPaymentContext(payment, 0L);
                     });
             when(paymentTxOps.applyConfirmResult(eq(1L), eq(PgOutcome.AMBIGUOUS))).thenReturn(payment);
             when(paymentTxOps.applyReconcileResult(eq(1L), eq(PgOutcome.AMBIGUOUS))).thenReturn(payment);
@@ -509,7 +509,7 @@ class PaymentServiceImplTest {
         @DisplayName("PG 승인 호출에서 처리되지 않는 예외가 발생하면 tx2를 타지 않고 예외가 그대로 전파되며, 결제는 재조회 대상 상태로 남는다.")
         void confirmUnexpectedExceptionSkipsTx2AndPropagates() {
             when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
-                    .thenAnswer(inv -> { payment.markPending(); return payment; });
+                    .thenAnswer(inv -> { payment.markPending(); return new PaymentTxOps.ReadyPaymentContext(payment, 0L); });
             when(pgClient.approve(any())).thenThrow(new NullPointerException("PG 응답 파싱 실패"));
 
             assertThatThrownBy(() -> paymentService.confirm(1L, new ConfirmPaymentRequest("PG_KEY_123"), "idem-key", 100L))
@@ -527,15 +527,13 @@ class PaymentServiceImplTest {
             when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
                     .thenAnswer(inv -> {
                         payment.markPending();
-                        return payment;
+                        return new PaymentTxOps.ReadyPaymentContext(payment, 3000L);
                     });
             when(paymentTxOps.applyConfirmResult(eq(1L), eq(PgOutcome.SUCCESS)))
                     .thenAnswer(inv -> {
                         payment.confirmVerifiedSuccess();
                         return payment;
                     });
-
-            when(pointService.findUsedAmount("ORDER:1:POINT_USE")).thenReturn(3000L);
 
             PgApproveResult approveResult = mock(PgApproveResult.class);
             when(approveResult.success()).thenReturn(true);
@@ -554,10 +552,9 @@ class PaymentServiceImplTest {
         @DisplayName("포인트를 사용한 결제의 승인이 실패하면 사용했던 포인트만큼 롤백된다.")
         void confirmFailureWithPoint() {
             when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
-                    .thenAnswer(inv -> { payment.markPending(); return payment; });
+                    .thenAnswer(inv -> { payment.markPending(); return new PaymentTxOps.ReadyPaymentContext(payment, 3000L); });
             when(paymentTxOps.applyConfirmResult(eq(1L), eq(PgOutcome.EXPLICIT_FAIL)))
                     .thenAnswer(inv -> { payment.confirmVerifiedFail(); return payment; });
-            when(pointService.findUsedAmount("ORDER:1:POINT_USE")).thenReturn(3000L);
 
             PgApproveResult approveResult = mock(PgApproveResult.class);
             when(approveResult.success()).thenReturn(false);
@@ -573,7 +570,7 @@ class PaymentServiceImplTest {
         @DisplayName("포인트를 사용하지 않은 결제의 승인이 실패하면 포인트 롤백은 호출되지 않는다.")
         void confirmFailureWithoutPoint() {
             when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
-                    .thenAnswer(inv -> { payment.markPending(); return payment; });
+                    .thenAnswer(inv -> { payment.markPending(); return new PaymentTxOps.ReadyPaymentContext(payment, 0L); });
             when(paymentTxOps.applyConfirmResult(eq(1L), eq(PgOutcome.EXPLICIT_FAIL)))
                     .thenAnswer(inv -> { payment.confirmVerifiedFail(); return payment; });
 
@@ -590,7 +587,7 @@ class PaymentServiceImplTest {
         @DisplayName("PG 승인이 성공하면 PaymentConfirmEvent가 발생한다.")
         void confirmSuccessPublishesOrderCompletionEvent() {
             when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
-                    .thenAnswer(inv -> { payment.markPending(); return payment; });
+                    .thenAnswer(inv -> { payment.markPending(); return new PaymentTxOps.ReadyPaymentContext(payment, 0L); });
             when(paymentTxOps.applyConfirmResult(eq(1L), any()))
                     .thenAnswer(inv -> { payment.confirmVerifiedSuccess(); return payment; });
 

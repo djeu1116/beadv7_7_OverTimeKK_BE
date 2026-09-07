@@ -41,6 +41,8 @@ import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
@@ -164,34 +166,58 @@ public class PaymentServiceImpl implements PaymentService{
     public ConfirmPaymentResponse confirm(Long paymentId, ConfirmPaymentRequest request, String idempotencyKey, Long userId) {
         String key = "CONFIRM:" + idempotencyKey;
         String requestHash = hashRequest(request);
-        Optional<String> cached = idempotencyKeyService.generate(key, requestHash);
+        Map<String, Long> timings = new LinkedHashMap<>();
+        long start = System.nanoTime();
+
+        Optional<String> cached = time(timings, "idemGenerate", () -> idempotencyKeyService.generate(key, requestHash));
         if (cached.isPresent()) {
+            logConfirmTiming(paymentId, timings, start, "CACHE_HIT");
             return deserialize(cached.get(), ConfirmPaymentResponse.class);
         }
 
         try {
-            ConfirmPaymentResponse response = doConfirm(paymentId, request, userId);
-            idempotencyKeyService.complete(key, toJson(response));
+            ConfirmPaymentResponse response = doConfirm(paymentId, request, userId, timings);
+            time(timings, "idemComplete", () -> { idempotencyKeyService.complete(key, toJson(response)); return null; });
+            logConfirmTiming(paymentId, timings, start, "OK");
             return response;
         } catch (RuntimeException e) {
             idempotencyKeyService.release(key);
+            logConfirmTiming(paymentId, timings, start, "ERROR:" + e.getClass().getSimpleName());
             throw e;
         }
     }
 
+    // TODO(perf): confirm() tx 분리 리팩토링 조사용 임시 계측. 측정 끝나면 제거.
+    private <T> T time(Map<String, Long> timings, String label, Supplier<T> action) {
+        long t0 = System.nanoTime();
+        try {
+            return action.get();
+        } finally {
+            timings.put(label, (System.nanoTime() - t0) / 1_000_000);
+        }
+    }
+
+    private void logConfirmTiming(Long paymentId, Map<String, Long> timings, long start, String result) {
+        long totalMs = (System.nanoTime() - start) / 1_000_000;
+        log.info("[CONFIRM_TIMING] paymentId={} result={} segments={} totalMs={}", paymentId, result, timings, totalMs);
+    }
+
     // 결제 확인
-    private ConfirmPaymentResponse doConfirm(Long paymentId, ConfirmPaymentRequest request, Long userId) {
-        Payment payment = paymentTxOps.assignKeyAndCommit(paymentId, request.transactionKey()); // tx1
+    private ConfirmPaymentResponse doConfirm(Long paymentId, ConfirmPaymentRequest request, Long userId, Map<String, Long> timings) {
+        PaymentTxOps.ReadyPaymentContext readyContext = time(timings, "tx1_assignKeyAndFindPoint",
+                () -> paymentTxOps.assignKeyAndCommit(paymentId, request.transactionKey())); // tx1 (+ 포인트 조회 병합)
+        Payment payment = readyContext.payment();
+        Long usedPoint = readyContext.usedPoint();
 
         if (!payment.getUserId().equals(userId)) throw new BusinessException(PaymentErrorCode.PAYMENT_ACCESS_DENIED);
 
-        Long usedPoint = getUsedPointForOrder(payment.getOrderId());
         Long pgApproveAmount = payment.getAmount() - usedPoint;
 
         PgOutcome outcome;
         PgApproveResult approveResult = null;
 
         // PG
+        long pgStart = System.nanoTime();
         try {
             approveResult = pgClient.approve(new PgApproveCommand(payment.getPaymentKey(), payment.getPgOrderId(), pgApproveAmount));
             outcome = approveResult.success() ? PgOutcome.SUCCESS : PgOutcome.EXPLICIT_FAIL;
@@ -201,19 +227,28 @@ public class PaymentServiceImpl implements PaymentService{
         } catch (RestClientException e) {
             log.error("토스 결제 승인 실패(응답 없음) - paymentId={}", paymentId, e);
             outcome = PgOutcome.AMBIGUOUS;
+        } finally {
+            timings.put("pgApprove", (System.nanoTime() - pgStart) / 1_000_000);
         }
 
-        payment = paymentTxOps.applyConfirmResult(paymentId, outcome); // tx2
+        PgOutcome finalOutcome = outcome;
+        payment = time(timings, "tx2_applyConfirmResult",
+                () -> paymentTxOps.applyConfirmResult(paymentId, finalOutcome)); // tx2
 
-        switch (outcome) {
-            case SUCCESS ->
-                    paymentResultEventPublisher.publishConfirmed(new PaymentConfirmEvent(payment.getOrderId(), payment.getId()));
-            case EXPLICIT_FAIL ->{
-                rollbackFailedPoint(payment.getOrderId(), usedPoint);
-                paymentResultEventPublisher.publishFailed(new PaymentFailEvent(payment.getOrderId(), payment.getId(), PaymentErrorCode.PG_REQUEST_FAILED.getMessage()));
+        Payment finalPayment = payment;
+        Long finalUsedPoint = usedPoint;
+        time(timings, "postProcess", () -> {
+            switch (finalOutcome) {
+                case SUCCESS ->
+                        paymentResultEventPublisher.publishConfirmed(new PaymentConfirmEvent(finalPayment.getOrderId(), finalPayment.getId()));
+                case EXPLICIT_FAIL -> {
+                    rollbackFailedPoint(finalPayment.getOrderId(), finalUsedPoint);
+                    paymentResultEventPublisher.publishFailed(new PaymentFailEvent(finalPayment.getOrderId(), finalPayment.getId(), PaymentErrorCode.PG_REQUEST_FAILED.getMessage()));
+                }
+                case AMBIGUOUS -> paymentTxOps.applyReconcileResult(finalPayment.getId(), finalOutcome);
             }
-            case AMBIGUOUS -> {paymentTxOps.applyReconcileResult(payment.getId(), outcome);}
-        }
+            return null;
+        });
         return ConfirmPaymentResponse.from(payment);
     }
 

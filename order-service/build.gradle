@@ -1,6 +1,10 @@
 dependencies {
     implementation project(':common')
 
+    // Redis (confirm() 멱등키 저장소)
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'org.apache.commons:commons-pool2'
+
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test:4.1.0'
     testImplementation 'com.h2database:h2'
