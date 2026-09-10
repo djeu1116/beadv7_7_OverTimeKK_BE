@@ -20,6 +20,7 @@ import com.programmers.kdt.ticket.repository.TicketRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -138,9 +139,26 @@ public class StandbyService {
                 .map(matched -> {
                     matched.hold(zone, ticketId);
                     eventPublisher.publishEvent(
-                            new StandbyTicketEvent(ticketId, matched.getUserId(), matched.getExpiredAt()));
+                            new StandbyTicketEvent(matched.getStandbyId(), ticketId, matched.getUserId(), matched.getExpiredAt()));
                     return matched;
                 });
+    }
+
+    // 매칭 알림 발송 결과 반영. 리스너(@Async)/재조회 스케줄러 양쪽에서 호출하므로 독립 트랜잭션으로 처리.
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markNotificationSent(Long standbyId) {
+        standbyRepository.findById(standbyId).ifPresent(Standby::markNotificationSent);
+    }
+
+    // giveUp=true면 재시도를 포기하고 GAVE_UP으로 확정 (재조회 스케줄러의 재시도 시간 초과 판단 결과).
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markNotificationFailed(Long standbyId, boolean giveUp) {
+        standbyRepository.findById(standbyId).ifPresent(standby -> {
+            standby.markNotificationFailed();
+            if (giveUp) {
+                standby.giveUpNotification();
+            }
+        });
     }
 
     private PerformanceSession findSession(Long performanceId, Long sessionNum) {

@@ -13,7 +13,8 @@ public enum PerformanceErrorCode implements ErrorCode {
     PERFORMANCE_SESSION_NOT_VALID(HttpStatus.UNPROCESSABLE_CONTENT, "PFM422_001", "공연 정보가 유효하지 않습니다."),
     PERFORMANCE_SESSION_INVALID_START_TIME(HttpStatus.UNPROCESSABLE_CONTENT, "PFM422_002", "공연 시작 시간은 현재보다 이후여야 합니다."),
     PERFORMANCE_SESSION_UPDATE_NOT_ALLOWED_AFTER_TICKET_OPEN(HttpStatus.UNPROCESSABLE_CONTENT, "PFM422_003", "공연 티켓 발권 시작 후에는 회차 정보 {0} 불가 합니다."),
-    PERFORMANCE_SESSION_UPDATE_NOT_ALLOWED_AFTER_PERFORMANCE_START(HttpStatus.UNPROCESSABLE_CONTENT, "PFM422_004", "공연 시작 후에는 회차 정보 {0} 불가 합니다.");
+    PERFORMANCE_SESSION_UPDATE_NOT_ALLOWED_AFTER_PERFORMANCE_START(HttpStatus.UNPROCESSABLE_CONTENT, "PFM422_004", "공연 시작 후에는 회차 정보 {0} 불가 합니다."),
+    SEARCH_FEATURE_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "PFM503_001", "검색 기능을 사용할 수 없습니다(Elasticsearch 비활성화).");
 
     private final HttpStatus httpStatus;
     private final String code;

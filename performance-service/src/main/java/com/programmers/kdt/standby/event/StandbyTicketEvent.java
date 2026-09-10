@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import java.time.LocalDateTime;
 
 public record StandbyTicketEvent(
+        Long standbyId,
         Long ticketId,
         Long standbyUserId,
 

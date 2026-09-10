@@ -292,9 +292,17 @@ CREATE TABLE `standby` (
   `zone3` varchar(255) DEFAULT NULL,
   `slot` enum('ZONE1','ZONE2','ZONE3') DEFAULT NULL,
   `standby_status` enum('CANCELLED','HELD','RESERVED','WAITING') NOT NULL,
+  `notification_status` enum('PENDING','SENT','GAVE_UP') NOT NULL DEFAULT 'PENDING',
+  `notification_attempts` int NOT NULL DEFAULT 0,
   PRIMARY KEY (`standby_id`),
   UNIQUE KEY `uk_standby_user_session` (`user_id`,`session_num`,`performance_id`),
   KEY `FKd8rc8pbq6vht7m11tyb0q30tb` (`session_num`,`performance_id`),
+  -- findMatchCandidate()의 PESSIMISTIC_WRITE 조회(세션+상태별 reservedAt 오름차순 1건)용.
+  -- 없으면 그 세션의 모든 상태(CANCELLED/HELD/RESERVED 포함)를 다 훑으면서 락을 걺 - 대기열/이력이
+  -- 쌓일수록 매칭 처리 시간이 선형으로 늘어남(실측: 노이즈 54,000행 기준 평균 1.29s → 0.085s, 약 15배).
+  KEY `idx_standby_match` (`performance_id`,`session_num`,`standby_status`,`reserved_at`),
+  -- NotificationReconciliationScheduler의 재시도 대상 조회(HELD + PENDING + modified_at 오름차순)용.
+  KEY `idx_standby_notification_retry` (`standby_status`,`notification_status`,`modified_at`),
   CONSTRAINT `FKd8rc8pbq6vht7m11tyb0q30tb` FOREIGN KEY (`session_num`, `performance_id`) REFERENCES `performance_session` (`performance_id`, `session_num`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

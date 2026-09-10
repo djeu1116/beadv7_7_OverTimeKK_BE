@@ -38,6 +38,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -45,7 +46,9 @@ import java.util.Objects;
 public class FindPerformanceServiceImpl implements FindPerformanceService {
 
     private final PerformanceRepository performanceRepository;
-    private final PerformanceSearchRepository performanceSearchRepository;
+    // no-es 프로필에서는 Elasticsearch 자동설정이 꺼져서 빈 자체가 없음 - Optional로 받아서
+    // 그 외 메서드(목록/좌석/판매자 조회 등)는 ES 없이도 정상 동작하게 함
+    private final Optional<PerformanceSearchRepository> performanceSearchRepository;
     private final HallRepository hallRepository;
     private final S3ImageService imageService;
 
@@ -101,7 +104,9 @@ public class FindPerformanceServiceImpl implements FindPerformanceService {
     @Override
     @Transactional(readOnly = true)
     public FindPerformancesResponse searchPerformancesByTitle(String title) {
-        List<PerformanceDocument> documents = performanceSearchRepository.findTop8ByTitle(title);
+        PerformanceSearchRepository searchRepository = performanceSearchRepository
+                .orElseThrow(() -> new BusinessException(PerformanceErrorCode.SEARCH_FEATURE_UNAVAILABLE));
+        List<PerformanceDocument> documents = searchRepository.findTop8ByTitle(title);
         if (documents.isEmpty()) {
             throw new BusinessException(PerformanceErrorCode.FIND_PERFORMANCES_NO_RESULT);
         }

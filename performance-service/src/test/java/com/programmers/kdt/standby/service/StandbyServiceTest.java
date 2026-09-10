@@ -249,6 +249,8 @@ class StandbyServiceTest {
 
             Standby earliest = mock(Standby.class);
             LocalDateTime expiredAt = LocalDateTime.now().plusMinutes(30);
+            Long standbyId = 100L;
+            given(earliest.getStandbyId()).willReturn(standbyId);
             given(earliest.getUserId()).willReturn(USER_ID);
             given(earliest.getExpiredAt()).willReturn(expiredAt);
 
@@ -263,7 +265,7 @@ class StandbyServiceTest {
             // then
             verify(earliest).hold("A", TICKET_ID);
             verify(eventPublisher)
-                    .publishEvent(new StandbyTicketEvent(TICKET_ID, USER_ID, expiredAt));
+                    .publishEvent(new StandbyTicketEvent(standbyId, TICKET_ID, USER_ID, expiredAt));
             verify(eventPublisher)
                     .publishEvent(new StandbyCheckResponseEvent(TICKET_ID, true));
         }
@@ -676,6 +678,8 @@ class StandbyServiceTest {
 
             Standby next = mock(Standby.class);
             LocalDateTime expiredAt = LocalDateTime.now().plusMinutes(30);
+            Long nextStandbyId = 200L;
+            given(next.getStandbyId()).willReturn(nextStandbyId);
             given(next.getUserId()).willReturn(2L);
             given(next.getExpiredAt()).willReturn(expiredAt);
             given(standbyRepository.findMatchCandidate(session, "VIP", StandbyStatus.WAITING))
@@ -687,7 +691,7 @@ class StandbyServiceTest {
             // then - 새로 매칭된 next는 같은 ticketId로 hold되고, 그 ticketId 그대로 이벤트가 발행된다.
             verify(next).hold("VIP", ticketId);
             verify(eventPublisher)
-                    .publishEvent(new StandbyTicketEvent(ticketId, 2L, expiredAt));
+                    .publishEvent(new StandbyTicketEvent(nextStandbyId, ticketId, 2L, expiredAt));
         }
     }
 }

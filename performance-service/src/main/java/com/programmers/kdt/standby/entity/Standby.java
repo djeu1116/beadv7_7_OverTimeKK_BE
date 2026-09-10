@@ -13,6 +13,7 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
@@ -27,9 +28,22 @@ import java.util.Objects;
 @Entity
 @Getter
 @NoArgsConstructor
-@Table(uniqueConstraints = @UniqueConstraint(
-        name = "uk_standby_user_session",
-        columnNames = {"user_id", "session_num", "performance_id"}))
+@Table(
+        uniqueConstraints = @UniqueConstraint(
+                name = "uk_standby_user_session",
+                columnNames = {"user_id", "session_num", "performance_id"}),
+        // findMatchCandidate()의 PESSIMISTIC_WRITE 조회(세션+상태별 reservedAt 오름차순 1건)를 위한 인덱스.
+        // ddl-auto=validate라 Hibernate가 실제로 만들어주진 않음 - 실제 스키마는 init-databases.sql에서 관리.
+        // 여기 선언은 "이 테이블엔 이 인덱스가 있어야 한다"는 의도를 코드에 남겨두는 문서화 목적.
+        indexes = {
+                @Index(
+                        name = "idx_standby_match",
+                        columnList = "performance_id, session_num, standby_status, reserved_at"),
+                // NotificationReconciliationScheduler의 재시도 대상 조회(HELD + PENDING + modified_at 오름차순)용.
+                @Index(
+                        name = "idx_standby_notification_retry",
+                        columnList = "standby_status, notification_status, modified_at")
+        })
 public class Standby extends BaseTimeEntity {
 
     private static final int MAX_ZONE_COUNT = 3;
@@ -72,6 +86,13 @@ public class Standby extends BaseTimeEntity {
 
     private Long ticketId;
 
+    // 매칭 알림(이메일) 발송 상태. HELD 전환 시 PENDING으로 시작, 재시도는 NotificationReconciliationScheduler가 담당.
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private NotificationStatus notificationStatus;
+
+    private int notificationAttempts;
+
     public static Standby apply(Long userId, PerformanceSession session, List<String> zones){
 
         validateZones(zones);
@@ -83,6 +104,7 @@ public class Standby extends BaseTimeEntity {
         standby.zone3 = zones.size() > 2 ? zones.get(2) : null;
         standby.standbyStatus = StandbyStatus.WAITING;
         standby.reservedAt = LocalDateTime.now();
+        standby.notificationStatus = NotificationStatus.PENDING;
         return standby;
     }
 
@@ -102,6 +124,20 @@ public class Standby extends BaseTimeEntity {
         this.standbyStatus = StandbyStatus.HELD;
         this.expiredAt = LocalDateTime.now().plusMinutes(TimeLimits.standbyHoldTicket30Min);
         this.ticketId = ticketId;
+        this.notificationStatus = NotificationStatus.PENDING;
+        this.notificationAttempts = 0;
+    }
+
+    public void markNotificationSent() {
+        this.notificationStatus = NotificationStatus.SENT;
+    }
+
+    public void markNotificationFailed() {
+        this.notificationAttempts++;
+    }
+
+    public void giveUpNotification() {
+        this.notificationStatus = NotificationStatus.GAVE_UP;
     }
 
     private Slot resolveSlot(String zone) {

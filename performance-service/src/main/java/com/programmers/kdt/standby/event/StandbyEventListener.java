@@ -43,8 +43,10 @@ public class StandbyEventListener {
         String body = "결제 마감: " + event.standbyExpiredAt() + " 까지 결제해주세요.";
         try {
             userClient.sendMatchNotification(event.standbyUserId(), subject, body);
+            standbyService.markNotificationSent(event.standbyId());
         } catch (Exception e) {
-            log.warn("매칭 알림 발송 실패. userId={}, ticketId={}", event.standbyUserId(), event.ticketId(), e);
+            log.warn("매칭 알림 발송 실패. standbyId={}, userId={}, ticketId={}", event.standbyId(), event.standbyUserId(), event.ticketId(), e);
+            standbyService.markNotificationFailed(event.standbyId(), false);
         }
     }
 
