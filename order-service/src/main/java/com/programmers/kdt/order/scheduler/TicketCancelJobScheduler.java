@@ -5,6 +5,7 @@ import com.programmers.kdt.order.entity.TicketCancelJobStatus;
 import com.programmers.kdt.order.repository.TicketCancelJobRepository;
 import com.programmers.kdt.order.service.TicketCancelJobService;
 import lombok.RequiredArgsConstructor;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -18,6 +19,7 @@ public class TicketCancelJobScheduler {
     private final TicketCancelJobService ticketCancelJobService;
 
     @Scheduled(fixedDelay = 10, timeUnit = TimeUnit.SECONDS)
+    @SchedulerLock(name = "ticketCancelJob", lockAtMostFor = "2m", lockAtLeastFor = "10s")
     public void cancelTicket(){
         for(TicketCancelJob job : ticketCancelJobRepository.findAllByStatus(TicketCancelJobStatus.PENDING)){
             ticketCancelJobService.process(job.getOrderId(), job.getTicketId(), job.getUserId());

@@ -5,6 +5,7 @@ import com.programmers.kdt.ticket.service.TicketReleaseService;
 import com.programmers.kdt.ticket.service.TicketService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -22,6 +23,7 @@ public class TicketScheduler {
     private final TicketReleaseService ticketReleaseService;
 
     @Scheduled(fixedDelay = 60, timeUnit = TimeUnit.SECONDS)
+    @SchedulerLock(name = "ticketRelease", lockAtMostFor = "3m", lockAtLeastFor = "55s")
     public void releaseExpiredHoldTickets() {
         List<Long> expiredTicketIds = ticketService.findExpiredHoldTicketIds();
         if (expiredTicketIds.isEmpty()) {

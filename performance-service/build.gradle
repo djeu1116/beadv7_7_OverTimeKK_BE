@@ -23,6 +23,10 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-cache'
     implementation 'org.apache.commons:commons-pool2'
 
+    // ShedLock (스케줄러 다중 인스턴스 중복 실행 방지)
+    implementation 'net.javacrumbs.shedlock:shedlock-spring:7.10.1'
+    implementation 'net.javacrumbs.shedlock:shedlock-provider-redis-spring:7.10.1'
+
     // elastic-search
     implementation 'org.springframework.boot:spring-boot-starter-data-elasticsearch'
 }

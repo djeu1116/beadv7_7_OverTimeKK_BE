@@ -9,6 +9,7 @@ import com.programmers.kdt.standby.repository.StandbyRepository;
 import com.programmers.kdt.standby.service.StandbyService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -36,6 +37,7 @@ public class NotificationReconciliationScheduler {
     private final SlackAlertClient slackAlertClient;
 
     @Scheduled(fixedDelay = 60000)
+    @SchedulerLock(name = "notificationReconciliation", lockAtMostFor = "5m", lockAtLeastFor = "55s")
     public void reconcileNotifications() {
         LocalDateTime cutoffTime = LocalDateTime.now().minus(MIN_PENDING_AGE);
         Page<Standby> targets = standbyRepository.findByStandbyStatusAndNotificationStatusAndModifiedAtBefore(
