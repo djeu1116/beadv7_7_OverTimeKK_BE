@@ -24,10 +24,16 @@ public class PaymentTxOps {
     }
 
     // tx1 + 포인트 조회를 한 트랜잭션으로 묶음 — PG 호출 전 MySQL 왕복을 2회에서 1회로 줄임
+    // 소유권 검증은 반드시 상태 변경(markPending)·커밋보다 먼저 한다 — 이 tx는 REQUIRES_NEW라
+    // 여기서 커밋되면 호출부에서 뒤늦게 던지는 예외로도 되돌릴 수 없음
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public ReadyPaymentContext assignKeyAndCommit(Long paymentId, String transactionKey) {
+    public ReadyPaymentContext assignKeyAndCommit(Long paymentId, String transactionKey, Long userId) {
         Payment payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new BusinessException(PaymentErrorCode.PAYMENT_NOT_FOUND));
+
+        if (!payment.getUserId().equals(userId)) {
+            throw new BusinessException(PaymentErrorCode.PAYMENT_ACCESS_DENIED);
+        }
 
         if (payment.getPaymentStatus() != PaymentStatus.READY) {
             throw new BusinessException(PaymentErrorCode.INVALID_PAYMENT_STATUS, payment.getPaymentStatus());
@@ -41,7 +47,7 @@ public class PaymentTxOps {
             throw new BusinessException(PaymentErrorCode.PAYMENT_CONCURRENT_MODIFICATION);
         }
 
-        Long usedPoint = pointService.findUsedAmount(PointEventIds.useEventId(payment.getOrderId()));
+        Long usedPoint = pointService.findUsedAmount(PointEventIds.useEventId(payment.getOrderId(), payment.getAttemptSeq()));
         return new ReadyPaymentContext(payment, usedPoint == null ? 0L : usedPoint);
     }
 

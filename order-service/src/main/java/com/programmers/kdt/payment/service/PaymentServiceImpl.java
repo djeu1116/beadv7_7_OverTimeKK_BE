@@ -144,8 +144,11 @@ public class PaymentServiceImpl implements PaymentService{
         // 아직 포인트 전액 결제는 고려하지 않은 상태.
         Long pgAmount = request.amount() - usedPoint;
 
+        // 재시도해도 이전 시도와 다른 eventId가 나오도록 attemptSeq를 미리 확정해서 포인트/Payment에 동일하게 반영
+        int attemptSeq = existing.map(p -> p.getAttemptSeq() + 1).orElse(0);
+
         if (usedPoint > 0) {
-            pointService.usePoint(order.getUserId(), usedPoint, PointEventIds.useEventId(request.orderId()));
+            pointService.usePoint(order.getUserId(), usedPoint, PointEventIds.useEventId(request.orderId(), attemptSeq));
         }
 
         PgReadyResult readyResult = callPg("토스 결제 준비", request.orderId(),
@@ -153,7 +156,7 @@ public class PaymentServiceImpl implements PaymentService{
         Payment payment;
         if (existing.isPresent()) {
             payment = existing.get();
-            payment.retryReady(readyResult.orderId());
+            payment.retryReady(readyResult.orderId(), attemptSeq);
         } else {
             payment = Payment.create(order.getOrderId(), order.getUserId(), request.amount());
             payment.assignPgOrderId(readyResult.orderId());
@@ -204,12 +207,11 @@ public class PaymentServiceImpl implements PaymentService{
 
     // 결제 확인
     private ConfirmPaymentResponse doConfirm(Long paymentId, ConfirmPaymentRequest request, Long userId, Map<String, Long> timings) {
+        // 소유권 검증은 assignKeyAndCommit(tx1) 안에서, 상태 변경·커밋보다 먼저 수행됨
         PaymentTxOps.ReadyPaymentContext readyContext = time(timings, "tx1_assignKeyAndFindPoint",
-                () -> paymentTxOps.assignKeyAndCommit(paymentId, request.transactionKey())); // tx1 (+ 포인트 조회 병합)
+                () -> paymentTxOps.assignKeyAndCommit(paymentId, request.transactionKey(), userId)); // tx1 (+ 포인트 조회 병합)
         Payment payment = readyContext.payment();
         Long usedPoint = readyContext.usedPoint();
-
-        if (!payment.getUserId().equals(userId)) throw new BusinessException(PaymentErrorCode.PAYMENT_ACCESS_DENIED);
 
         Long pgApproveAmount = payment.getAmount() - usedPoint;
 
@@ -242,7 +244,7 @@ public class PaymentServiceImpl implements PaymentService{
                 case SUCCESS ->
                         paymentResultEventPublisher.publishConfirmed(new PaymentConfirmEvent(finalPayment.getOrderId(), finalPayment.getId()));
                 case EXPLICIT_FAIL -> {
-                    rollbackFailedPoint(finalPayment.getOrderId(), finalUsedPoint);
+                    rollbackFailedPoint(finalPayment, finalUsedPoint);
                     paymentResultEventPublisher.publishFailed(new PaymentFailEvent(finalPayment.getOrderId(), finalPayment.getId(), PaymentErrorCode.PG_REQUEST_FAILED.getMessage()));
                 }
                 case AMBIGUOUS -> paymentTxOps.applyReconcileResult(finalPayment.getId(), finalOutcome);
@@ -279,8 +281,8 @@ public class PaymentServiceImpl implements PaymentService{
                         () -> pgClient.cancel(new PgCancelCommand(payment.getPaymentKey(), payment.getAmount(), request.reason())));
             }
 
-            Long usedPoint = getUsedPointForOrder(payment.getOrderId());
-            rollbackFailedPoint(payment.getOrderId(), usedPoint);
+            Long usedPoint = getUsedPointForOrder(payment);
+            rollbackFailedPoint(payment, usedPoint);
             paymentResultEventPublisher.publishFailed(
                     new PaymentFailEvent(payment.getOrderId(), payment.getId(), request.reason())
             );
@@ -339,7 +341,7 @@ public class PaymentServiceImpl implements PaymentService{
             if (refundRate == 0.0) {
                 failReason = PaymentErrorCode.REFUND_PERIOD_EXPIRED.toString();
             } else {
-                Long usedPoint = getUsedPointForOrder(payment.getOrderId());
+                Long usedPoint = getUsedPointForOrder(payment);
 
                 Long pgPaidAmount = payment.getAmount() - usedPoint;
 
@@ -355,7 +357,7 @@ public class PaymentServiceImpl implements PaymentService{
                     refundCompleted = true;
 
                     if (usedPoint > 0) {
-                        rollbackRefundPointWithRetry(payment.getOrderId(), usedPoint, refundRate, payment.getId());
+                        rollbackRefundPointWithRetry(payment, usedPoint, refundRate);
                     }
                 }
             }
@@ -412,27 +414,33 @@ public class PaymentServiceImpl implements PaymentService{
                 .orElseThrow(() -> new BusinessException(PaymentErrorCode.PAYMENT_NOT_FOUND));
         }
 
-        private Long getUsedPointForOrder(Long orderId) {
-            return resolveUsedPoint(PointEventIds.useEventId(orderId));
+        private Long getUsedPointForOrder(Payment payment) {
+            return resolveUsedPoint(PointEventIds.useEventId(payment.getOrderId(), payment.getAttemptSeq()));
         }
 
 
-        private void rollbackFailedPoint(Long orderId, Long usedPoint) {
+        private void rollbackFailedPoint(Payment payment, Long usedPoint) {
             if (usedPoint > 0) {
-                pointService.rollbackPoint(PointEventIds.useEventId(orderId), usedPoint, PointEventIds.rollbackFailEventId(orderId), true);
+                Long orderId = payment.getOrderId();
+                int attemptSeq = payment.getAttemptSeq();
+                pointService.rollbackPoint(PointEventIds.useEventId(orderId, attemptSeq), usedPoint,
+                        PointEventIds.rollbackFailEventId(orderId, attemptSeq), true);
         }
     }
 
     // 재시도
-    private void rollbackRefundPointWithRetry(Long orderId, Long usedPoint, double refundRate, Long paymentId) {
+    private void rollbackRefundPointWithRetry(Payment payment, Long usedPoint, double refundRate) {
         Long refundedPoint = RefundPolicy.calculateRefundAmount(usedPoint, refundRate);
         if (refundedPoint <= 0) {
             return;
         }
 
+        Long orderId = payment.getOrderId();
+        Long paymentId = payment.getId();
+        int attemptSeq = payment.getAttemptSeq();
         boolean isFullRollback = refundedPoint.equals(usedPoint);
-        String originEventId = PointEventIds.useEventId(orderId);
-        String rollbackEventId = PointEventIds.rollbackEventId(orderId);
+        String originEventId = PointEventIds.useEventId(orderId, attemptSeq);
+        String rollbackEventId = PointEventIds.rollbackEventId(orderId, attemptSeq);
 
         int maxAttempts = 3; // 최대 재시도 횟수
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {

@@ -54,7 +54,7 @@ class PaymentTxOpsTest {
             when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
             when(pointService.findUsedAmount(any())).thenReturn(3000L);
 
-            PaymentTxOps.ReadyPaymentContext result = paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1");
+            PaymentTxOps.ReadyPaymentContext result = paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1", 10L);
 
             assertThat(result.payment().getPaymentKey()).isEqualTo("PG_KEY_1");
             assertThat(result.payment().getPaymentStatus()).isEqualTo(PaymentStatus.CONFIRM_PENDING_VERIFICATION);
@@ -69,7 +69,7 @@ class PaymentTxOpsTest {
             when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
             when(pointService.findUsedAmount(any())).thenReturn(null);
 
-            PaymentTxOps.ReadyPaymentContext result = paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1");
+            PaymentTxOps.ReadyPaymentContext result = paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1", 10L);
 
             assertThat(result.usedPoint()).isEqualTo(0L);
         }
@@ -79,7 +79,7 @@ class PaymentTxOpsTest {
         void notFound_throwsAndNeverSaves() {
             when(paymentRepository.findById(1L)).thenReturn(Optional.empty());
 
-            assertThatThrownBy(() -> paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1"))
+            assertThatThrownBy(() -> paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1", 10L))
                     .isInstanceOf(BusinessException.class)
                     .extracting(e -> ((BusinessException) e).getErrorCode())
                     .isEqualTo(PaymentErrorCode.PAYMENT_NOT_FOUND);
@@ -94,7 +94,7 @@ class PaymentTxOpsTest {
             payment.fail();
             when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
 
-            assertThatThrownBy(() -> paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1"))
+            assertThatThrownBy(() -> paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1", 10L))
                     .isInstanceOf(BusinessException.class)
                     .extracting(e -> ((BusinessException) e).getErrorCode())
                     .isEqualTo(PaymentErrorCode.INVALID_PAYMENT_STATUS);
@@ -110,10 +110,28 @@ class PaymentTxOpsTest {
             when(paymentRepository.saveAndFlush(payment))
                     .thenThrow(new ObjectOptimisticLockingFailureException(Payment.class, 1L));
 
-            assertThatThrownBy(() -> paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1"))
+            assertThatThrownBy(() -> paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1", 10L))
                     .isInstanceOf(BusinessException.class)
                     .extracting(e -> ((BusinessException) e).getErrorCode())
                     .isEqualTo(PaymentErrorCode.PAYMENT_CONCURRENT_MODIFICATION);
+        }
+
+        @Test
+        @DisplayName("소유자가 다르면 상태를 바꾸거나 커밋하기 전에 예외가 발생한다.")
+        void ownerMismatch_throwsBeforeAnyMutation() {
+            Payment payment = readyPayment(1L); // userId=10L로 생성됨
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+
+            assertThatThrownBy(() -> paymentTxOps.assignKeyAndCommit(1L, "ATTACKER_KEY", 999L))
+                    .isInstanceOf(BusinessException.class)
+                    .extracting(e -> ((BusinessException) e).getErrorCode())
+                    .isEqualTo(PaymentErrorCode.PAYMENT_ACCESS_DENIED);
+
+            // 예외가 나기 전에 이미 커밋됐다면 여기서 상태/키가 이미 바뀌어 있었을 것
+            assertThat(payment.getPaymentKey()).isNull();
+            assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.READY);
+            verify(paymentRepository, never()).saveAndFlush(any());
+            verifyNoInteractions(pointService);
         }
     }
 

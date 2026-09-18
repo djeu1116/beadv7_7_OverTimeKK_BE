@@ -2,15 +2,16 @@ package com.programmers.kdt.payment.service.util;
 
 public final class PointEventIds {
 
-    public static String useEventId(Long orderId) {
-        return "ORDER:" + orderId + ":POINT_USE";
+    // attemptSeq로 스코프해서 결제 재시도마다 다른 eventId가 나오게 함
+    public static String useEventId(Long orderId, int attemptSeq) {
+        return "ORDER:" + orderId + ":ATTEMPT:" + attemptSeq + ":POINT_USE";
     }
 
-    public static String rollbackEventId(Long orderId) {
-        return "ORDER:" + orderId + ":POINT_ROLLBACK_REFUND";
+    public static String rollbackEventId(Long orderId, int attemptSeq) {
+        return "ORDER:" + orderId + ":ATTEMPT:" + attemptSeq + ":POINT_ROLLBACK_REFUND";
     }
 
-    public static String rollbackFailEventId(Long orderId) {
-        return "ORDER:" + orderId + ":POINT_ROLLBACK_FAIL";
+    public static String rollbackFailEventId(Long orderId, int attemptSeq) {
+        return "ORDER:" + orderId + ":ATTEMPT:" + attemptSeq + ":POINT_ROLLBACK_FAIL";
     }
 }

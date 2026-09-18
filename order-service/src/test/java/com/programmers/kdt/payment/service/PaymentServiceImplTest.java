@@ -200,6 +200,38 @@ class PaymentServiceImplTest {
         }
 
         @Test
+        @DisplayName("실패 후 재시도하면 attemptSeq가 증가하고, 포인트 사용 이벤트ID도 이전 시도와 달라진다.")
+        void retryAfterFailed_usesDistinctAttemptSeqAndPointEventId() {
+            Order order = mock(Order.class);
+            when(order.getOrderId()).thenReturn(1L);
+            when(order.getUserId()).thenReturn(1L);
+            when(order.getTotalAmount()).thenReturn(10000L);
+
+            PgReadyResult readyResult = mock(PgReadyResult.class);
+            when(readyResult.transactionKey()).thenReturn("PG_KEY_123");
+            when(readyResult.orderId()).thenReturn("PG_ORDER_2");
+
+            Payment failedPayment = Payment.create(1L, 1L, 10000L); // attemptSeq=0으로 생성된 1차 시도
+            failedPayment.fail();
+
+            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.of(failedPayment));
+            when(pgClient.ready(any())).thenReturn(readyResult);
+
+            CreatePaymentRequest pointRequest = new CreatePaymentRequest(1L, 10000L, 3000L);
+            paymentService.pay("idem-key-retry", pointRequest, 1L); // 2차(재시도) 결제 요청
+
+            assertThat(failedPayment.getAttemptSeq()).isEqualTo(1);
+
+            ArgumentCaptor<String> eventIdCaptor = ArgumentCaptor.forClass(String.class);
+            verify(pointService).usePoint(eq(1L), eq(3000L), eventIdCaptor.capture());
+            assertThat(eventIdCaptor.getValue())
+                    .as("재시도는 1차 시도(ORDER:1:ATTEMPT:0:POINT_USE)와 다른 eventId를 써야 포인트가 다시 정상 차감된다")
+                    .isEqualTo("ORDER:1:ATTEMPT:1:POINT_USE")
+                    .isNotEqualTo("ORDER:1:ATTEMPT:0:POINT_USE");
+        }
+
+        @Test
         @DisplayName("주문이 존재하지 않으면 예외가 발생한다.")
         void payOrderNotFound() {
 
@@ -294,7 +326,7 @@ class PaymentServiceImplTest {
             assertThat(response.status()).isEqualTo(PaymentStatus.READY.name());
             assertThat(response.amount()).isEqualTo(10000L);
 
-            verify(pointService).usePoint(1L, 3000L, "ORDER:1:POINT_USE");
+            verify(pointService).usePoint(1L, 3000L, "ORDER:1:ATTEMPT:0:POINT_USE");
 
             ArgumentCaptor<PgReadyCommand> captor = ArgumentCaptor.forClass(PgReadyCommand.class);
             verify(pgClient).ready(captor.capture());
@@ -379,7 +411,7 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("PG 승인이 성공하면 결제 상태가 PAID로 바뀐다.")
         void confirmSuccess() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
                     .thenAnswer(inv -> {
                         payment.markPending();
                         return new PaymentTxOps.ReadyPaymentContext(payment, 0L);
@@ -405,7 +437,7 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("PG 승인이 실패하면 결제 상태가 FAILED로 바뀐다.")
         void confirmFailure() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
                     .thenAnswer(inv -> {
                         payment.markPending();
                         return new PaymentTxOps.ReadyPaymentContext(payment, 0L);
@@ -434,7 +466,7 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("결제를 찾을 수 없으면 예외가 발생한다.")
         void confirmPaymentNotFound() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
                     .thenThrow(new BusinessException(PaymentErrorCode.PAYMENT_NOT_FOUND));
 
             assertThatThrownBy(() -> paymentService.confirm(1L, new ConfirmPaymentRequest("PG_KEY_123"), "idem-key", 100L))
@@ -450,7 +482,7 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("READY 상태가 아니면 예외가 발생하고 PG 승인 요청은 나가지 않는다.")
         void confirmInvalidStatus() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
                     .thenThrow(new BusinessException(PaymentErrorCode.INVALID_PAYMENT_STATUS, PaymentStatus.PAID));
 
             assertThatThrownBy(() -> paymentService.confirm(1L, new ConfirmPaymentRequest("PG_KEY_123"), "idem-key", 100L))
@@ -465,7 +497,7 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("PG사가 승인을 거절하면 결제 상태가 FAILED로 바뀐다.")
         void confirmPgClientExceptionMarksFailed() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
                     .thenAnswer(inv -> {
                         payment.markPending();
                         return new PaymentTxOps.ReadyPaymentContext(payment, 0L);
@@ -487,7 +519,7 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("PG 응답이 없으면(타임 아웃) 예외 없이 재조회 대상 상태로 남는다.")
         void confirmPgTimeoutStaysAmbiguousForReconciliation() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
                     .thenAnswer(inv -> {
                         payment.markPending();
                         return new PaymentTxOps.ReadyPaymentContext(payment, 0L);
@@ -508,7 +540,7 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("PG 승인 호출에서 처리되지 않는 예외가 발생하면 tx2를 타지 않고 예외가 그대로 전파되며, 결제는 재조회 대상 상태로 남는다.")
         void confirmUnexpectedExceptionSkipsTx2AndPropagates() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
                     .thenAnswer(inv -> { payment.markPending(); return new PaymentTxOps.ReadyPaymentContext(payment, 0L); });
             when(pgClient.approve(any())).thenThrow(new NullPointerException("PG 응답 파싱 실패"));
 
@@ -524,7 +556,7 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("포인트를 사용한 결제가 승인되면 PG 승인 금액에서 포인트만큼 차감되고, 포인트는 다시 건드리지 않는다.")
         void confirmSuccessWithPoint() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
                     .thenAnswer(inv -> {
                         payment.markPending();
                         return new PaymentTxOps.ReadyPaymentContext(payment, 3000L);
@@ -551,7 +583,7 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("포인트를 사용한 결제의 승인이 실패하면 사용했던 포인트만큼 롤백된다.")
         void confirmFailureWithPoint() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
                     .thenAnswer(inv -> { payment.markPending(); return new PaymentTxOps.ReadyPaymentContext(payment, 3000L); });
             when(paymentTxOps.applyConfirmResult(eq(1L), eq(PgOutcome.EXPLICIT_FAIL)))
                     .thenAnswer(inv -> { payment.confirmVerifiedFail(); return payment; });
@@ -563,13 +595,13 @@ class PaymentServiceImplTest {
             paymentService.confirm(1L, new ConfirmPaymentRequest("PG_KEY_123"), "idem-key", 100L);
 
             assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.FAILED);
-            verify(pointService).rollbackPoint("ORDER:1:POINT_USE", 3000L, "ORDER:1:POINT_ROLLBACK_FAIL", true);
+            verify(pointService).rollbackPoint("ORDER:1:ATTEMPT:0:POINT_USE", 3000L, "ORDER:1:ATTEMPT:0:POINT_ROLLBACK_FAIL", true);
         }
 
         @Test
         @DisplayName("포인트를 사용하지 않은 결제의 승인이 실패하면 포인트 롤백은 호출되지 않는다.")
         void confirmFailureWithoutPoint() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
                     .thenAnswer(inv -> { payment.markPending(); return new PaymentTxOps.ReadyPaymentContext(payment, 0L); });
             when(paymentTxOps.applyConfirmResult(eq(1L), eq(PgOutcome.EXPLICIT_FAIL)))
                     .thenAnswer(inv -> { payment.confirmVerifiedFail(); return payment; });
@@ -586,7 +618,7 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("PG 승인이 성공하면 PaymentConfirmEvent가 발생한다.")
         void confirmSuccessPublishesOrderCompletionEvent() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any()))
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
                     .thenAnswer(inv -> { payment.markPending(); return new PaymentTxOps.ReadyPaymentContext(payment, 0L); });
             when(paymentTxOps.applyConfirmResult(eq(1L), any()))
                     .thenAnswer(inv -> { payment.confirmVerifiedSuccess(); return payment; });
@@ -690,12 +722,12 @@ class PaymentServiceImplTest {
         @DisplayName("포인트를 사용한 결제가 실패 처리되면 PG 취소와 포인트 롤백이 모두 일어난다.")
         void failWithPointAndPaymentKey() {
             when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
-            when(pointService.findUsedAmount("ORDER:1:POINT_USE")).thenReturn(3000L);
+            when(pointService.findUsedAmount("ORDER:1:ATTEMPT:0:POINT_USE")).thenReturn(3000L);
 
             paymentService.fail(1L, new FailPaymentRequest("고객 요청"), 100L);
 
             verify(pgClient).cancel(any());
-            verify(pointService).rollbackPoint("ORDER:1:POINT_USE", 3000L, "ORDER:1:POINT_ROLLBACK_FAIL", true);
+            verify(pointService).rollbackPoint("ORDER:1:ATTEMPT:0:POINT_USE", 3000L, "ORDER:1:ATTEMPT:0:POINT_ROLLBACK_FAIL", true);
         }
 
         @Test
@@ -703,13 +735,13 @@ class PaymentServiceImplTest {
         void failWithPointButNoPaymentKey() {
             Payment noKeyPayment = Payment.create(1L, 100L, 10000L);
             when(paymentRepository.findById(1L)).thenReturn(Optional.of(noKeyPayment));
-            when(pointService.findUsedAmount("ORDER:1:POINT_USE")).thenReturn(3000L);
+            when(pointService.findUsedAmount("ORDER:1:ATTEMPT:0:POINT_USE")).thenReturn(3000L);
 
             paymentService.fail(1L, new FailPaymentRequest("고객 요청"), 100L);
 
             assertThat(noKeyPayment.getPaymentStatus()).isEqualTo(PaymentStatus.FAILED);
             verifyNoInteractions(pgClient);
-            verify(pointService).rollbackPoint("ORDER:1:POINT_USE", 3000L, "ORDER:1:POINT_ROLLBACK_FAIL", true);
+            verify(pointService).rollbackPoint("ORDER:1:ATTEMPT:0:POINT_USE", 3000L, "ORDER:1:ATTEMPT:0:POINT_ROLLBACK_FAIL", true);
         }
 
         @Test
@@ -941,14 +973,14 @@ class PaymentServiceImplTest {
         when(performanceClient.getPerformanceDate(10L)).thenReturn(LocalDate.now().plusDays(4));
         when(pgClient.cancel(any(PgCancelCommand.class)))
                 .thenReturn(new PgCancelResult(true, LocalDateTime.now()));
-        when(pointService.findUsedAmount("ORDER:1:POINT_USE")).thenReturn(3000L);
+        when(pointService.findUsedAmount("ORDER:1:ATTEMPT:0:POINT_USE")).thenReturn(3000L);
 
         // when
         paymentService.onRefundRequested(new RefundRequestEvent(1L, "고객 요청", LocalDateTime.now()));
 
         // then
         assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.CANCELLED);
-        verify(pointService).rollbackPoint("ORDER:1:POINT_USE", 1200L, "ORDER:1:POINT_ROLLBACK_REFUND", false);
+        verify(pointService).rollbackPoint("ORDER:1:ATTEMPT:0:POINT_USE", 1200L, "ORDER:1:ATTEMPT:0:POINT_ROLLBACK_REFUND", false);
     }
 
     @Test
@@ -989,7 +1021,7 @@ class PaymentServiceImplTest {
         when(performanceClient.getPerformanceDate(10L)).thenReturn(LocalDate.now().plusDays(4));
         when(pgClient.cancel(any(PgCancelCommand.class)))
                 .thenReturn(new PgCancelResult(true, LocalDateTime.now()));
-        when(pointService.findUsedAmount("ORDER:1:POINT_USE")).thenReturn(3000L);
+        when(pointService.findUsedAmount("ORDER:1:ATTEMPT:0:POINT_USE")).thenReturn(3000L);
         doThrow(new BusinessException(PointErrorCode.POINT_CONCURRENT_MODIFICATION))
                 .when(pointService).rollbackPoint(any(), any(), any(), anyBoolean());
 
@@ -1018,7 +1050,7 @@ class PaymentServiceImplTest {
         when(performanceClient.getPerformanceDate(10L)).thenReturn(LocalDate.now().plusDays(4));
         when(pgClient.cancel(any(PgCancelCommand.class)))
                 .thenReturn(new PgCancelResult(true, LocalDateTime.now()));
-        when(pointService.findUsedAmount("ORDER:1:POINT_USE")).thenReturn(3000L);
+        when(pointService.findUsedAmount("ORDER:1:ATTEMPT:0:POINT_USE")).thenReturn(3000L);
         doThrow(new BusinessException(PointErrorCode.POINT_CONCURRENT_MODIFICATION))
                 .doNothing()
                 .when(pointService).rollbackPoint(any(), any(), any(), anyBoolean());
@@ -1045,8 +1077,8 @@ class PaymentServiceImplTest {
         when(performanceClient.getPerformanceDate(10L)).thenReturn(LocalDate.now().plusDays(4));
         when(pgClient.cancel(any(PgCancelCommand.class)))
                 .thenReturn(new PgCancelResult(true, LocalDateTime.now()));
-        when(pointService.findUsedAmount("ORDER:1:POINT_USE")).thenReturn(3000L);
-        doThrow(new BusinessException(PointErrorCode.ORIGIN_POINT_LOG_NOT_FOUND, "ORDER:1:POINT_USE"))
+        when(pointService.findUsedAmount("ORDER:1:ATTEMPT:0:POINT_USE")).thenReturn(3000L);
+        doThrow(new BusinessException(PointErrorCode.ORIGIN_POINT_LOG_NOT_FOUND, "ORDER:1:ATTEMPT:0:POINT_USE"))
                 .when(pointService).rollbackPoint(any(), any(), any(), anyBoolean());
 
         //when
@@ -1124,7 +1156,7 @@ class PaymentServiceImplTest {
         when(performanceClient.getPerformanceDate(10L)).thenReturn(LocalDate.now().plusDays(4));
         when(pgClient.cancel(any(PgCancelCommand.class)))
                 .thenReturn(new PgCancelResult(true, LocalDateTime.now()));
-        when(pointService.findUsedAmount("ORDER:1:POINT_USE")).thenReturn(3000L);
+        when(pointService.findUsedAmount("ORDER:1:ATTEMPT:0:POINT_USE")).thenReturn(3000L);
         doThrow(new RuntimeException("unexpected"))
                 .when(pointService).rollbackPoint(any(), any(), any(), anyBoolean());
 

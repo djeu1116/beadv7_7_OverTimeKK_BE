@@ -105,6 +105,7 @@ DROP TABLE IF EXISTS `payment`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `payment` (
   `amount` bigint NOT NULL,
+  `attempt_seq` int NOT NULL DEFAULT '0',
   `created_at` datetime(6) NOT NULL,
   `id` bigint NOT NULL AUTO_INCREMENT,
   `modified_at` datetime(6) NOT NULL,

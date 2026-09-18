@@ -46,6 +46,9 @@ public class Payment extends BaseTimeEntity {
     @Column(name = "version", nullable = false)
     private Long version;
 
+    @Column(name = "attempt_seq", nullable = false)
+    private Integer attemptSeq;  // 결제 시도 순번(0부터), 재시도마다 증가
+
     //결제 생성 메서드
     public static Payment create(Long orderId, Long userId, Long amount) {
         if (orderId == null) { // 어떤 예외처리 ?
@@ -61,6 +64,7 @@ public class Payment extends BaseTimeEntity {
         payment.amount = amount;
         payment.paymentStatus = PaymentStatus.READY; //상태는 READY로 생성
         payment.refundedAmount = 0L; //환불금액은 0
+        payment.attemptSeq = 0;
         return payment;
     }
 
@@ -109,13 +113,14 @@ public class Payment extends BaseTimeEntity {
         this.paymentKey = paymentKey;
     }
 
-    public void retryReady(String pgOrderId) {
+    public void retryReady(String pgOrderId, int attemptSeq) {
         if (paymentStatus != PaymentStatus.FAILED) {
             throw new BusinessException(PaymentErrorCode.INVALID_PAYMENT_STATUS, this.paymentStatus);
         }
         this.paymentStatus = PaymentStatus.READY;
         this.pgOrderId = pgOrderId;
         this.paymentKey = null;
+        this.attemptSeq = attemptSeq;
     }
 
     public void assignPgOrderId(String pgOrderId) {

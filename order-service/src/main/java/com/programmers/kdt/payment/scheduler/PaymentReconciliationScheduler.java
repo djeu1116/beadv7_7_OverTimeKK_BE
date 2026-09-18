@@ -83,7 +83,7 @@ public class PaymentReconciliationScheduler {
             paymentResultEventPublisher.publishConfirmed(
                     new PaymentConfirmEvent(resolved.getOrderId(), resolved.getId()));
         } else {
-            failAndRollbackPoint(resolved.getOrderId(), resolved.getId());
+            failAndRollbackPoint(resolved);
         }
 
         return true;
@@ -97,13 +97,15 @@ public class PaymentReconciliationScheduler {
 
         log.error("[PG_CONFIRM_RECONCILIATION_NEEDED] 재조회 시간 초과로 결제 실패 처리 - paymentId={}, orderId={}, pendingSince={} ", payment.getId(), payment.getOrderId(), payment.getModifiedAt());
         Payment resolved = paymentTxOps.applyReconcileResult(payment.getId(), PgOutcome.EXPLICIT_FAIL);
-        failAndRollbackPoint(resolved.getOrderId(), resolved.getId());
+        failAndRollbackPoint(resolved);
         return true;
     }
 
-    private void failAndRollbackPoint(Long orderId, Long paymentId) {
-        Long usedPoint = resolvedUsedPoint(PointEventIds.useEventId(orderId));
-        rollbackPointWithRetry(orderId, usedPoint, paymentId);
+    private void failAndRollbackPoint(Payment payment) {
+        Long orderId = payment.getOrderId();
+        Long paymentId = payment.getId();
+        Long usedPoint = resolvedUsedPoint(PointEventIds.useEventId(orderId, payment.getAttemptSeq()));
+        rollbackPointWithRetry(payment, usedPoint);
         paymentResultEventPublisher.publishFailed(
                 new PaymentFailEvent(orderId, paymentId, PaymentErrorCode.PG_REQUEST_FAILED.getMessage()));
     }
@@ -113,11 +115,15 @@ public class PaymentReconciliationScheduler {
         return usedPoint == null ? 0L : usedPoint;
     }
 
-    private void rollbackPointWithRetry(Long orderId, Long usedPoint, Long paymentId) {
+    private void rollbackPointWithRetry(Payment payment, Long usedPoint) {
         if (usedPoint <= 0) return;
+        Long orderId = payment.getOrderId();
+        Long paymentId = payment.getId();
+        int attemptSeq = payment.getAttemptSeq();
         for (int attempt = 1; attempt <= MAX_POINT_ROLLBACK_ATTEMPTS; attempt++) {
             try {
-                pointService.rollbackPoint(PointEventIds.useEventId(orderId), usedPoint, PointEventIds.rollbackFailEventId(orderId), true);
+                pointService.rollbackPoint(PointEventIds.useEventId(orderId, attemptSeq), usedPoint,
+                        PointEventIds.rollbackFailEventId(orderId, attemptSeq), true);
                 return;
             } catch (BusinessException e) {
                 boolean retryable = e.getErrorCode() == PointErrorCode.POINT_CONCURRENT_MODIFICATION;
