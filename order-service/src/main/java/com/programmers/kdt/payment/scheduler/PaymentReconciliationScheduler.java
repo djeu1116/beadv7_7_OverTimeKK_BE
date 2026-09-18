@@ -1,15 +1,11 @@
 package com.programmers.kdt.payment.scheduler;
 
 import com.programmers.kdt.common.exception.BusinessException;
-import com.programmers.kdt.payment.client.pay.PaymentConfirmEvent;
-import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
-import com.programmers.kdt.payment.client.pay.PaymentResultEventPublisher;
 import com.programmers.kdt.payment.client.pg.PgApproveResult;
 import com.programmers.kdt.payment.client.pg.PgClient;
 import com.programmers.kdt.payment.client.pg.PgClientException;
 import com.programmers.kdt.payment.entity.Payment;
 import com.programmers.kdt.payment.entity.PaymentStatus;
-import com.programmers.kdt.payment.exception.PaymentErrorCode;
 import com.programmers.kdt.payment.exception.PointErrorCode;
 import com.programmers.kdt.payment.repository.PaymentRepository;
 import com.programmers.kdt.payment.service.PointService;
@@ -41,7 +37,6 @@ public class PaymentReconciliationScheduler {
     private final PaymentRepository paymentRepository;
     private final PgClient pgClient;
     private final PaymentTxOps paymentTxOps;
-    private final PaymentResultEventPublisher paymentResultEventPublisher;
     private final PointService pointService;
 
     @Scheduled(fixedDelay = 60000)
@@ -78,12 +73,10 @@ public class PaymentReconciliationScheduler {
 
         if (outcome == PgOutcome.AMBIGUOUS) return handleAmbiguous(payment);
 
+        // PAYMENT_CONFIRMED/PAYMENT_FAILED 이벤트는 applyReconcileResult 안에서 이미 outbox에 기록됨
         Payment resolved = paymentTxOps.applyReconcileResult(payment.getId(), outcome);
-        if (outcome == PgOutcome.SUCCESS) {
-            paymentResultEventPublisher.publishConfirmed(
-                    new PaymentConfirmEvent(resolved.getOrderId(), resolved.getId()));
-        } else {
-            failAndRollbackPoint(resolved);
+        if (outcome != PgOutcome.SUCCESS) {
+            rollbackFailedPoint(resolved);
         }
 
         return true;
@@ -97,17 +90,13 @@ public class PaymentReconciliationScheduler {
 
         log.error("[PG_CONFIRM_RECONCILIATION_NEEDED] 재조회 시간 초과로 결제 실패 처리 - paymentId={}, orderId={}, pendingSince={} ", payment.getId(), payment.getOrderId(), payment.getModifiedAt());
         Payment resolved = paymentTxOps.applyReconcileResult(payment.getId(), PgOutcome.EXPLICIT_FAIL);
-        failAndRollbackPoint(resolved);
+        rollbackFailedPoint(resolved);
         return true;
     }
 
-    private void failAndRollbackPoint(Payment payment) {
-        Long orderId = payment.getOrderId();
-        Long paymentId = payment.getId();
-        Long usedPoint = resolvedUsedPoint(PointEventIds.useEventId(orderId, payment.getAttemptSeq()));
+    private void rollbackFailedPoint(Payment payment) {
+        Long usedPoint = resolvedUsedPoint(PointEventIds.useEventId(payment.getOrderId(), payment.getAttemptSeq()));
         rollbackPointWithRetry(payment, usedPoint);
-        paymentResultEventPublisher.publishFailed(
-                new PaymentFailEvent(orderId, paymentId, PaymentErrorCode.PG_REQUEST_FAILED.getMessage()));
     }
 
     private Long resolvedUsedPoint(String eventId) {

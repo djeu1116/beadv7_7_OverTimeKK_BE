@@ -6,15 +6,14 @@ import com.programmers.kdt.common.exception.CommonErrorCode;
 import com.programmers.kdt.order.entity.Order;
 import com.programmers.kdt.order.entity.OrderStatus;
 import com.programmers.kdt.order.repository.OrderRepository;
-import com.programmers.kdt.payment.client.pay.PaymentConfirmEvent;
 import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
-import com.programmers.kdt.payment.client.pay.PaymentResultEventPublisher;
 import com.programmers.kdt.payment.client.pg.*;
 import com.programmers.kdt.payment.client.refund.*;
 import com.programmers.kdt.payment.dto.*;
 import com.programmers.kdt.payment.entity.Payment;
 import com.programmers.kdt.payment.entity.PaymentRefund;
 import com.programmers.kdt.payment.entity.PaymentStatus;
+import com.programmers.kdt.payment.entity.outbox.OutboxEventType;
 import com.programmers.kdt.payment.exception.PaymentErrorCode;
 import com.programmers.kdt.payment.exception.PointErrorCode;
 import com.programmers.kdt.payment.repository.PaymentRefundRepository;
@@ -61,17 +60,15 @@ class PaymentServiceImplTest {
     @Mock
     private PerformanceClient performanceClient;
     @Mock
-    private RefundEventPublisher refundEventPublisher;
-    @Mock
     private PointService pointService;
-    @Mock
-    private PaymentResultEventPublisher paymentResultEventPublisher;
     @Mock
     private IdempotencyKeyService idempotencyKeyService;
     @Mock
     private ObjectMapper objectMapper;
     @Mock
     private PaymentTxOps paymentTxOps;
+    @Mock
+    private OutboxEventWriter outboxEventWriter;
 
     private PaymentService paymentService;
 
@@ -79,7 +76,7 @@ class PaymentServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        paymentService = new PaymentServiceImpl(paymentRepository, orderRepository, paymentRefundRepository, refundEventPublisher, performanceClient, orderClient, pgClient, pointService, idempotencyKeyService, objectMapper, paymentResultEventPublisher, paymentTxOps);
+        paymentService = new PaymentServiceImpl(paymentRepository, orderRepository, paymentRefundRepository, performanceClient, orderClient, pgClient, pointService, idempotencyKeyService, objectMapper, paymentTxOps, outboxEventWriter);
         lenient().when(idempotencyKeyService.generate(any(String.class), any(String.class))).thenReturn(Optional.empty());
         lenient().when(objectMapper.writeValueAsString(any())).thenReturn("{}");
         lenient().when(orderRepository.tryStartPayment(
@@ -456,11 +453,6 @@ class PaymentServiceImplTest {
             paymentService.confirm(1L, new ConfirmPaymentRequest("PG_KEY_123"), "idem-key", 100L);
 
             assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.FAILED);
-
-            ArgumentCaptor<PaymentFailEvent> captor = ArgumentCaptor.forClass(PaymentFailEvent.class);
-            verify(paymentResultEventPublisher).publishFailed(captor.capture());
-            assertThat(captor.getValue().orderId()).isEqualTo(payment.getOrderId());
-            assertThat(captor.getValue().paymentId()).isEqualTo(payment.getId());
         }
 
         @Test
@@ -475,8 +467,6 @@ class PaymentServiceImplTest {
                     .isEqualTo(PaymentErrorCode.PAYMENT_NOT_FOUND);
 
             verifyNoInteractions(pgClient);
-            verifyNoInteractions(paymentResultEventPublisher);
-
         }
 
         @Test
@@ -491,7 +481,6 @@ class PaymentServiceImplTest {
                     .isEqualTo(PaymentErrorCode.INVALID_PAYMENT_STATUS);
 
             verifyNoInteractions(pgClient);
-            verifyNoInteractions(paymentResultEventPublisher);
         }
 
         @Test
@@ -512,8 +501,6 @@ class PaymentServiceImplTest {
             paymentService.confirm(1L, new ConfirmPaymentRequest("PG_KEY_123"), "idem-key", 100L);
 
             assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.FAILED);
-            verify(paymentResultEventPublisher).publishFailed(any());
-
         }
 
         @Test
@@ -533,7 +520,6 @@ class PaymentServiceImplTest {
             assertThat(response).isNotNull();
             assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.CONFIRM_PENDING_VERIFICATION);
 
-            verifyNoInteractions(paymentResultEventPublisher);
             verify(paymentTxOps).applyReconcileResult(eq(1L), eq(PgOutcome.AMBIGUOUS));
         }
 
@@ -549,7 +535,6 @@ class PaymentServiceImplTest {
 
             assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.CONFIRM_PENDING_VERIFICATION);
             verify(paymentTxOps, never()).applyConfirmResult(anyLong(), any());
-            verifyNoInteractions(paymentResultEventPublisher);
             verify(idempotencyKeyService).release("CONFIRM:idem-key");
         }
 
@@ -613,27 +598,6 @@ class PaymentServiceImplTest {
             paymentService.confirm(1L, new ConfirmPaymentRequest("PG_KEY_123"), "idem-key", 100L);
 
             verify(pointService, never()).rollbackPoint(any(), any(), any(), anyBoolean());
-        }
-
-        @Test
-        @DisplayName("PG 승인이 성공하면 PaymentConfirmEvent가 발생한다.")
-        void confirmSuccessPublishesOrderCompletionEvent() {
-            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
-                    .thenAnswer(inv -> { payment.markPending(); return new PaymentTxOps.ReadyPaymentContext(payment, 0L); });
-            when(paymentTxOps.applyConfirmResult(eq(1L), any()))
-                    .thenAnswer(inv -> { payment.confirmVerifiedSuccess(); return payment; });
-
-            PgApproveResult approveResult = mock(PgApproveResult.class);
-            when(approveResult.success()).thenReturn(true);
-            when(pgClient.approve(any())).thenReturn(approveResult);
-
-            paymentService.confirm(1L, new ConfirmPaymentRequest("PG_KEY_123"), "idem-key", 100L);
-
-            ArgumentCaptor<PaymentConfirmEvent> captor =
-                    ArgumentCaptor.forClass(PaymentConfirmEvent.class);
-            verify(paymentResultEventPublisher).publishConfirmed(captor.capture());
-            assertThat(captor.getValue().orderId()).isEqualTo(payment.getOrderId());
-            assertThat(captor.getValue().paymentId()).isEqualTo(payment.getId());
         }
     }
 
@@ -728,6 +692,7 @@ class PaymentServiceImplTest {
 
             verify(pgClient).cancel(any());
             verify(pointService).rollbackPoint("ORDER:1:ATTEMPT:0:POINT_USE", 3000L, "ORDER:1:ATTEMPT:0:POINT_ROLLBACK_FAIL", true);
+            verify(outboxEventWriter).enqueue(eq(OutboxEventType.PAYMENT_FAILED), any(), any());
         }
 
         @Test
@@ -835,7 +800,7 @@ class PaymentServiceImplTest {
             assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
             verifyNoInteractions(pgClient, paymentRefundRepository);
             verify(paymentRepository, never()).saveAndFlush(any());
-            verify(refundEventPublisher, never()).publish(any());
+            verifyNoInteractions(outboxEventWriter);
         }
     }
 
@@ -874,7 +839,7 @@ class PaymentServiceImplTest {
             verify(paymentRefundRepository).save(refundCaptor.capture());
             assertThat(refundCaptor.getValue().getRefundAmount()).isEqualTo(4000L);
 
-            verify(refundEventPublisher).publishCompleted(any());
+            verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_COMPLETED), eq(1L), any());
 
         }
     }
@@ -902,9 +867,9 @@ class PaymentServiceImplTest {
         verifyNoInteractions(paymentRefundRepository);
 
         ArgumentCaptor<RefundFailedEvent> eventCaptor = ArgumentCaptor.forClass(RefundFailedEvent.class);
-        verify(refundEventPublisher).publishFailed(eventCaptor.capture());
+        verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_FAILED), any(), eventCaptor.capture());
         assertThat(eventCaptor.getValue().orderId()).isEqualTo(payment.getOrderId());
-        verify(refundEventPublisher, never()).publishCompleted(any());
+        verify(outboxEventWriter, never()).enqueue(eq(OutboxEventType.REFUND_COMPLETED), any(), any());
 
     }
 
@@ -930,8 +895,8 @@ class PaymentServiceImplTest {
         //then
         assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
         verifyNoInteractions(paymentRefundRepository); // return 누락 상태면 이 테스트가 실패함
-        verify(refundEventPublisher).publishFailed(any());
-        verify(refundEventPublisher, never()).publishCompleted(any());
+        verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_FAILED), any(), any());
+        verify(outboxEventWriter, never()).enqueue(eq(OutboxEventType.REFUND_COMPLETED), any(), any());
     }
 
     @Test
@@ -954,8 +919,8 @@ class PaymentServiceImplTest {
         verifyNoInteractions(pgClient);
         verifyNoInteractions(paymentRefundRepository);
 
-        verify(refundEventPublisher).publishFailed(any());
-        verify(refundEventPublisher, never()).publishCompleted(any());
+        verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_FAILED), any(), any());
+        verify(outboxEventWriter, never()).enqueue(eq(OutboxEventType.REFUND_COMPLETED), any(), any());
     }
 
     @Test
@@ -1031,8 +996,8 @@ class PaymentServiceImplTest {
         //then
         assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.CANCELLED);
         verify(pointService, times(3)).rollbackPoint(any(), any(), any(), anyBoolean());
-        verify(refundEventPublisher).publishCompleted(any());
-        verify(refundEventPublisher, never()).publishFailed(any());
+        verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_COMPLETED), any(), any());
+        verify(outboxEventWriter, never()).enqueue(eq(OutboxEventType.REFUND_FAILED), any(), any());
     }
 
     @Test
@@ -1111,8 +1076,8 @@ class PaymentServiceImplTest {
         assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
         verifyNoInteractions(pgClient);
         verifyNoInteractions(paymentRefundRepository);
-        verify(refundEventPublisher).publishFailed(any());
-        verify(refundEventPublisher, never()).publishCompleted(any());
+        verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_FAILED), any(), any());
+        verify(outboxEventWriter, never()).enqueue(eq(OutboxEventType.REFUND_COMPLETED), any(), any());
     }
 
     @Test
@@ -1137,8 +1102,8 @@ class PaymentServiceImplTest {
         assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
         verifyNoInteractions(pgClient);
         verifyNoInteractions(paymentRefundRepository);
-        verify(refundEventPublisher).publishFailed(any());
-        verify(refundEventPublisher, never()).publishCompleted(any());
+        verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_FAILED), any(), any());
+        verify(outboxEventWriter, never()).enqueue(eq(OutboxEventType.REFUND_COMPLETED), any(), any());
     }
 
     @Test
@@ -1163,7 +1128,91 @@ class PaymentServiceImplTest {
         paymentService.onRefundRequested(new RefundRequestEvent(1L, "고객 요청", LocalDateTime.now()));
 
         assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.CANCELLED);
-        verify(refundEventPublisher).publishCompleted(any());
-        verify(refundEventPublisher, never()).publishFailed(any());
+        verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_COMPLETED), any(), any());
+        verify(outboxEventWriter, never()).enqueue(eq(OutboxEventType.REFUND_FAILED), any(), any());
+    }
+
+    @Nested
+    @DisplayName("시스템 보상 (티켓 예약 영구 실패)")
+    class Compensation {
+
+        @Test
+        @DisplayName("PAID 결제는 requestRefund로 전이된 뒤, 정책 요율 계산 없이 전액 PG취소되고 완료 이벤트가 기록된다.")
+        void compensatesFullAmount_withoutPolicyRateCalculation() {
+            Payment payment = Payment.create(1L, 100L, 10000L);
+            ReflectionTestUtils.setField(payment, "id", 1L);
+            payment.assignPaymentKey("PG_KEY_123");
+            payment.approve(); // PAID
+
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+            when(pgClient.cancel(any(PgCancelCommand.class)))
+                    .thenReturn(new PgCancelResult(true, LocalDateTime.now()));
+
+            paymentService.onRefundRequested(new CompensationRequestEvent(1L));
+
+            assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.CANCELLED);
+            assertThat(payment.getRefundedAmount()).isEqualTo(10000L); // 정책 요율 무관하게 전액
+
+            ArgumentCaptor<PgCancelCommand> captor = ArgumentCaptor.forClass(PgCancelCommand.class);
+            verify(pgClient).cancel(captor.capture());
+            assertThat(captor.getValue().cancelAmount()).isEqualTo(10000L);
+
+            verifyNoInteractions(orderClient, performanceClient); // 환불 기간/정책 조회를 아예 안 탐
+            verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_COMPLETED), eq(1L), any());
+        }
+
+        @Test
+        @DisplayName("사용 포인트가 있으면 전액 롤백된다.")
+        void compensatesRollsBackFullPoint() {
+            Payment payment = Payment.create(1L, 100L, 10000L);
+            ReflectionTestUtils.setField(payment, "id", 1L);
+            payment.assignPaymentKey("PG_KEY_123");
+            payment.approve();
+
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+            when(pgClient.cancel(any(PgCancelCommand.class)))
+                    .thenReturn(new PgCancelResult(true, LocalDateTime.now()));
+            when(pointService.findUsedAmount("ORDER:1:ATTEMPT:0:POINT_USE")).thenReturn(3000L);
+
+            paymentService.onRefundRequested(new CompensationRequestEvent(1L));
+
+            verify(pointService).rollbackPoint("ORDER:1:ATTEMPT:0:POINT_USE", 3000L, "ORDER:1:ATTEMPT:0:POINT_ROLLBACK_REFUND", true);
+        }
+
+        @Test
+        @DisplayName("PG 취소가 실패하면 결제는 PAID로 복귀하고 실패 이벤트가 기록된다.")
+        void pgCancelFails_revertsToPaid() {
+            Payment payment = Payment.create(1L, 100L, 10000L);
+            ReflectionTestUtils.setField(payment, "id", 1L);
+            payment.assignPaymentKey("PG_KEY_123");
+            payment.approve();
+
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+            when(pgClient.cancel(any(PgCancelCommand.class)))
+                    .thenReturn(new PgCancelResult(false, null));
+
+            paymentService.onRefundRequested(new CompensationRequestEvent(1L));
+
+            assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
+            verifyNoInteractions(paymentRefundRepository);
+            verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_FAILED), eq(1L), any());
+        }
+
+        @Test
+        @DisplayName("이미 PAID가 아니면(다른 흐름이 처리 중/완료) 아무것도 하지 않는다 - 중복 보상 방지.")
+        void alreadyNotPaid_doesNothing() {
+            Payment payment = Payment.create(1L, 100L, 10000L);
+            ReflectionTestUtils.setField(payment, "id", 1L);
+            payment.assignPaymentKey("PG_KEY_123");
+            payment.approve();
+            payment.requestRefund(); // REFUND_PENDING - 이미 고객 환불이 진행 중인 상황을 흉내
+
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+
+            paymentService.onRefundRequested(new CompensationRequestEvent(1L));
+
+            assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.REFUND_PENDING);
+            verifyNoInteractions(pgClient, paymentRefundRepository, outboxEventWriter);
+        }
     }
 }

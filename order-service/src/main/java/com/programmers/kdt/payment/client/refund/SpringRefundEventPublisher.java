@@ -24,4 +24,9 @@ public class SpringRefundEventPublisher implements RefundEventPublisher {
     public void publishFailed(RefundFailedEvent event) {
         eventPublisher.publishEvent(event);
     }
+
+    @Override
+    public void publishCompensationRequested(CompensationRequestEvent event) {
+        eventPublisher.publishEvent(event);
+    }
 }

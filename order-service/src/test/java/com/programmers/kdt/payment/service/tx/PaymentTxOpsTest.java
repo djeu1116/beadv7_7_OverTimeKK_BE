@@ -1,16 +1,21 @@
 package com.programmers.kdt.payment.service.tx;
 
 import com.programmers.kdt.common.exception.BusinessException;
+import com.programmers.kdt.payment.client.pay.PaymentConfirmEvent;
+import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
 import com.programmers.kdt.payment.entity.Payment;
 import com.programmers.kdt.payment.entity.PaymentStatus;
+import com.programmers.kdt.payment.entity.outbox.OutboxEventType;
 import com.programmers.kdt.payment.exception.PaymentErrorCode;
 import com.programmers.kdt.payment.repository.PaymentRepository;
+import com.programmers.kdt.payment.service.OutboxEventWriter;
 import com.programmers.kdt.payment.service.PointService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
@@ -29,12 +34,14 @@ class PaymentTxOpsTest {
     private PaymentRepository paymentRepository;
     @Mock
     private PointService pointService;
+    @Mock
+    private OutboxEventWriter outboxEventWriter;
 
     private PaymentTxOps paymentTxOps;
 
     @BeforeEach
     void setUp() {
-        paymentTxOps = new PaymentTxOps(paymentRepository, pointService);
+        paymentTxOps = new PaymentTxOps(paymentRepository, pointService, outboxEventWriter);
     }
 
     private Payment readyPayment(Long id) {
@@ -140,7 +147,7 @@ class PaymentTxOpsTest {
     class ApplyConfirmResult {
 
         @Test
-        @DisplayName("SUCCESS면 PAID로 확정하고 저장한다.")
+        @DisplayName("SUCCESS면 PAID로 확정하고 저장하고, PAYMENT_CONFIRMED를 outbox에 기록한다.")
         void success_confirmsAndSaves() {
             Payment payment = readyPayment(1L);
             payment.markPending();
@@ -150,10 +157,15 @@ class PaymentTxOpsTest {
 
             assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
             verify(paymentRepository).saveAndFlush(payment);
+
+            ArgumentCaptor<PaymentConfirmEvent> captor = ArgumentCaptor.forClass(PaymentConfirmEvent.class);
+            verify(outboxEventWriter).enqueue(eq(OutboxEventType.PAYMENT_CONFIRMED), eq(1L), captor.capture());
+            assertThat(captor.getValue().orderId()).isEqualTo(payment.getOrderId());
+            assertThat(captor.getValue().paymentId()).isEqualTo(1L);
         }
 
         @Test
-        @DisplayName("EXPLICIT_FAIL이면 FAILED로 확정하고 저장한다.")
+        @DisplayName("EXPLICIT_FAIL이면 FAILED로 확정하고 저장하고, PAYMENT_FAILED를 outbox에 기록한다.")
         void explicitFail_failsAndSaves() {
             Payment payment = readyPayment(1L);
             payment.markPending();
@@ -163,10 +175,24 @@ class PaymentTxOpsTest {
 
             assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.FAILED);
             verify(paymentRepository).saveAndFlush(payment);
+            verify(outboxEventWriter).enqueue(eq(OutboxEventType.PAYMENT_FAILED), eq(1L), any(PaymentFailEvent.class));
         }
 
         @Test
-        @DisplayName("AMBIGUOUS면 상태는 그대로 두지만, applyReconcileResult와 달리 saveAndFlush는 그대로 호출된다.")
+        @DisplayName("이미 PAID인 결제에 SUCCESS가 다시 오면 중복 무시되고, outbox에도 다시 기록하지 않는다.")
+        void alreadyPaid_doesNotEnqueueAgain() {
+            Payment payment = readyPayment(1L);
+            payment.markPending();
+            payment.confirmVerifiedSuccess();
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+
+            paymentTxOps.applyConfirmResult(1L, PgOutcome.SUCCESS);
+
+            verifyNoInteractions(outboxEventWriter);
+        }
+
+        @Test
+        @DisplayName("AMBIGUOUS면 상태는 그대로 두지만, applyReconcileResult와 달리 saveAndFlush는 그대로 호출되고, outbox에는 기록하지 않는다.")
         void ambiguous_noStateChangeButStillSaves() {
             Payment payment = readyPayment(1L);
             payment.markPending();
@@ -176,6 +202,7 @@ class PaymentTxOpsTest {
 
             assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.CONFIRM_PENDING_VERIFICATION);
             verify(paymentRepository).saveAndFlush(payment);
+            verifyNoInteractions(outboxEventWriter);
         }
 
         @Test
@@ -199,7 +226,7 @@ class PaymentTxOpsTest {
     class ApplyReconcileResult {
 
         @Test
-        @DisplayName("AMBIGUOUS면 저장 없이 조회한 상태 그대로 반환한다.")
+        @DisplayName("AMBIGUOUS면 저장 없이 조회한 상태 그대로 반환하고, outbox에도 기록하지 않는다.")
         void ambiguous_skipsSave() {
             Payment payment = readyPayment(1L);
             payment.markPending();
@@ -209,6 +236,33 @@ class PaymentTxOpsTest {
 
             assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.CONFIRM_PENDING_VERIFICATION);
             verify(paymentRepository, never()).saveAndFlush(any());
+            verifyNoInteractions(outboxEventWriter);
+        }
+
+        @Test
+        @DisplayName("SUCCESS면 PAID로 확정하고 PAYMENT_CONFIRMED를 outbox에 기록한다.")
+        void success_confirmsAndEnqueues() {
+            Payment payment = readyPayment(1L);
+            payment.markPending();
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+
+            Payment result = paymentTxOps.applyReconcileResult(1L, PgOutcome.SUCCESS);
+
+            assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
+            verify(outboxEventWriter).enqueue(eq(OutboxEventType.PAYMENT_CONFIRMED), eq(1L), any(PaymentConfirmEvent.class));
+        }
+
+        @Test
+        @DisplayName("EXPLICIT_FAIL이면 FAILED로 확정하고 PAYMENT_FAILED를 outbox에 기록한다.")
+        void explicitFail_failsAndEnqueues() {
+            Payment payment = readyPayment(1L);
+            payment.markPending();
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+
+            Payment result = paymentTxOps.applyReconcileResult(1L, PgOutcome.EXPLICIT_FAIL);
+
+            assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.FAILED);
+            verify(outboxEventWriter).enqueue(eq(OutboxEventType.PAYMENT_FAILED), eq(1L), any(PaymentFailEvent.class));
         }
 
         @Test

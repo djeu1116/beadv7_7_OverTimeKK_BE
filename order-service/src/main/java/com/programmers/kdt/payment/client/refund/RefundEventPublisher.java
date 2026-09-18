@@ -7,4 +7,6 @@ public interface RefundEventPublisher { // PaymentService는 해당 인터페이
     void publishCompleted(RefundCompletedEvent event);
 
     void publishFailed(RefundFailedEvent event);
+
+    void publishCompensationRequested(CompensationRequestEvent event);
 }

@@ -2,12 +2,13 @@ package com.programmers.kdt.payment.scheduler;
 
 import com.programmers.kdt.payment.client.pay.PaymentConfirmEvent;
 import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
-import com.programmers.kdt.payment.client.pay.PaymentResultEventPublisher;
 import com.programmers.kdt.payment.client.pg.MockPgClient;
 import com.programmers.kdt.payment.client.pg.PgApproveResult;
 import com.programmers.kdt.payment.entity.Payment;
 import com.programmers.kdt.payment.entity.PaymentStatus;
+import com.programmers.kdt.payment.entity.outbox.OutboxEventType;
 import com.programmers.kdt.payment.repository.PaymentRepository;
+import com.programmers.kdt.payment.service.OutboxEventWriter;
 import com.programmers.kdt.payment.service.PointService;
 import com.programmers.kdt.payment.service.tx.PaymentTxOps;
 import jakarta.persistence.EntityManager;
@@ -34,17 +35,17 @@ public class PaymentReconciliationIntegrationTest {
     private EntityManager em;
 
     private final MockPgClient mockPgClient = new MockPgClient();
-    private final PaymentResultEventPublisher paymentResultEventPublisher = mock(PaymentResultEventPublisher.class);
     private final PointService pointService = mock(PointService.class);
+    private final OutboxEventWriter outboxEventWriter = mock(OutboxEventWriter.class);
 
     private PaymentReconciliationScheduler scheduler;
 
     @BeforeEach
     void setUp() {
         mockPgClient.reset();
-        PaymentTxOps paymentTxOps = new PaymentTxOps(paymentRepository, pointService);
+        PaymentTxOps paymentTxOps = new PaymentTxOps(paymentRepository, pointService, outboxEventWriter);
         scheduler = new PaymentReconciliationScheduler(
-                paymentRepository, mockPgClient, paymentTxOps, paymentResultEventPublisher, pointService);
+                paymentRepository, mockPgClient, paymentTxOps, pointService);
     }
 
     private Payment persistPendingPayment(String paymentKey) {
@@ -65,7 +66,7 @@ public class PaymentReconciliationIntegrationTest {
     }
 
     @Test
-    @DisplayName("실제 DB 기준으로, PG 재조회 성공 시 PAID 확정, 승인 이벤트가 발행된다.")
+    @DisplayName("실제 DB 기준으로, PG 재조회 성공 시 PAID 확정, 승인 이벤트가 outbox에 기록된다.")
     void reconcile_success_confirmPayment() {
         Payment pending = persistPendingPayment("PG_KEY_OK");
         mockPgClient.stubSelect("PG_KEY_OK", () -> new PgApproveResult(true, LocalDateTime.now()));
@@ -74,13 +75,13 @@ public class PaymentReconciliationIntegrationTest {
 
         Payment result = paymentRepository.findById(pending.getId()).orElseThrow();
         assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
-        verify(paymentResultEventPublisher).publishConfirmed(
-                new PaymentConfirmEvent(result.getOrderId(), result.getId()));
+        verify(outboxEventWriter).enqueue(eq(OutboxEventType.PAYMENT_CONFIRMED), eq(result.getId()),
+                eq(new PaymentConfirmEvent(result.getOrderId(), result.getId())));
 
     }
 
     @Test
-    @DisplayName("실제 DB 기준으로, PG 재조회 실패 시 FAILED 확정, 실패 이벤트가 발행된다.")
+    @DisplayName("실제 DB 기준으로, PG 재조회 실패 시 FAILED 확정, 실패 이벤트가 outbox에 기록되고 포인트가 롤백된다.")
     void reconcile_explicitFail_failPaymentAndRollback() {
         Payment pending = persistPendingPayment("PG_KEY_FAIL");
         mockPgClient.stubSelect("PG_KEY_FAIL", () -> new PgApproveResult(false, null));
@@ -91,7 +92,7 @@ public class PaymentReconciliationIntegrationTest {
         Payment result = paymentRepository.findById(pending.getId()).orElseThrow();
         assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.FAILED);
         verify(pointService).rollbackPoint(anyString(), eq(3000L), anyString(), eq(true));
-        verify(paymentResultEventPublisher).publishFailed(any(PaymentFailEvent.class));
+        verify(outboxEventWriter).enqueue(eq(OutboxEventType.PAYMENT_FAILED), eq(result.getId()), any(PaymentFailEvent.class));
     }
 
     @Test
@@ -108,7 +109,7 @@ public class PaymentReconciliationIntegrationTest {
         Payment result = paymentRepository.findById(pending.getId()).orElseThrow();
         assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.CONFIRM_PENDING_VERIFICATION);
         assertThat(result.getModifiedAt()).isEqualTo(originModifiedAt);
-        verifyNoInteractions(paymentResultEventPublisher);
+        verifyNoInteractions(outboxEventWriter);
     }
 
     @Test
@@ -121,7 +122,7 @@ public class PaymentReconciliationIntegrationTest {
 
         Payment result = paymentRepository.findById(pending.getId()).orElseThrow();
         assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.CONFIRM_PENDING_VERIFICATION);
-        verifyNoInteractions(paymentResultEventPublisher);
+        verifyNoInteractions(outboxEventWriter);
     }
 
     @Test
@@ -134,8 +135,7 @@ public class PaymentReconciliationIntegrationTest {
 
         Payment result = paymentRepository.findById(pending.getId()).orElseThrow();
         assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
-        verify(paymentResultEventPublisher).publishConfirmed(
-                new PaymentConfirmEvent(result.getOrderId(), result.getId()));
+        verify(outboxEventWriter).enqueue(eq(OutboxEventType.PAYMENT_CONFIRMED), eq(result.getId()),
+                eq(new PaymentConfirmEvent(result.getOrderId(), result.getId())));
     }
 }
-

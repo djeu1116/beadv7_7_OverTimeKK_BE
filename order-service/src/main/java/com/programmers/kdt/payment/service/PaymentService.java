@@ -1,5 +1,6 @@
 package com.programmers.kdt.payment.service;
 
+import com.programmers.kdt.payment.client.refund.CompensationRequestEvent;
 import com.programmers.kdt.payment.client.refund.RefundRequestEvent;
 import com.programmers.kdt.payment.dto.*;
 import org.springframework.data.domain.Page;
@@ -23,6 +24,9 @@ public interface PaymentService {
     RefundPaymentResponse refund(Long orderId, RefundPaymentRequest request);
 
     void onRefundRequested(RefundRequestEvent event);
+
+    // 결제는 확정됐는데 후속 단계가 영구 실패해서 시스템이 트리거하는 보상(전액 취소)
+    void onRefundRequested(CompensationRequestEvent event);
 
     // 환불 내역 조회
     Page<GetPaymentRefundHistoryResponse> getRefundHistory (Long paymentId, Long userId, Pageable pageable);

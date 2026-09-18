@@ -1,8 +1,5 @@
 package com.programmers.kdt.payment.scheduler;
 
-import com.programmers.kdt.payment.client.pay.PaymentConfirmEvent;
-import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
-import com.programmers.kdt.payment.client.pay.PaymentResultEventPublisher;
 import com.programmers.kdt.payment.client.pg.PgApproveResult;
 import com.programmers.kdt.payment.client.pg.PgClient;
 import com.programmers.kdt.payment.client.pg.PgClientException;
@@ -39,15 +36,13 @@ class PaymentReconciliationSchedulerTest {
     @Mock
     private PaymentTxOps paymentTxOps;
     @Mock
-    private PaymentResultEventPublisher paymentResultEventPublisher;
-    @Mock
     private PointService pointService;
 
     private PaymentReconciliationScheduler scheduler;
 
     @BeforeEach
     void setUp() {
-        scheduler = new PaymentReconciliationScheduler(paymentRepository, pgClient, paymentTxOps, paymentResultEventPublisher, pointService);
+        scheduler = new PaymentReconciliationScheduler(paymentRepository, pgClient, paymentTxOps, pointService);
     }
 
     private Payment pendingPayment(Long id, LocalDateTime modifiedAt) {
@@ -71,11 +66,11 @@ class PaymentReconciliationSchedulerTest {
 
         scheduler.reconcilePayments();
 
-        verifyNoInteractions(pgClient, paymentTxOps, paymentResultEventPublisher, pointService);
+        verifyNoInteractions(pgClient, paymentTxOps, pointService);
     }
 
     @Test
-    @DisplayName("PG 재조회가 성공이면 PAID로 확정하고 승인 이벤트를 발행한다.")
+    @DisplayName("PG 재조회가 성공이면 PAID로 확정한다. (이벤트 발행은 applyReconcileResult 내부 책임 - PaymentTxOpsTest에서 검증)")
     void success_confirmAndPublishes() {
         Payment payment = pendingPayment(1L, LocalDateTime.now());
         stubPending(payment);
@@ -85,12 +80,11 @@ class PaymentReconciliationSchedulerTest {
         scheduler.reconcilePayments();
 
         verify(paymentTxOps).applyReconcileResult(1L, PgOutcome.SUCCESS);
-        verify(paymentResultEventPublisher).publishConfirmed(new PaymentConfirmEvent(1L, 1L));
         verifyNoInteractions(pointService);
     }
 
     @Test
-    @DisplayName("PG 재조회가 success=false면 FAILED 처리 + 포인트 롤백 + 실패 이벤트를 발행")
+    @DisplayName("PG 재조회가 success=false면 FAILED 처리 + 포인트 롤백")
     void fail_confirmAndPublishes() {
         Payment payment = pendingPayment(2L, LocalDateTime.now());
         stubPending(payment);
@@ -105,9 +99,6 @@ class PaymentReconciliationSchedulerTest {
         verify(paymentTxOps).applyReconcileResult(2L, PgOutcome.EXPLICIT_FAIL);
         verify(pointService).rollbackPoint(anyString(), eq(3000L), anyString(),
                 eq(true));
-        verify(paymentResultEventPublisher).publishFailed(
-                new PaymentFailEvent(1L, 2L,
-                        PaymentErrorCode.PG_REQUEST_FAILED.getMessage()));
     }
 
     @Test
@@ -122,7 +113,6 @@ class PaymentReconciliationSchedulerTest {
         scheduler.reconcilePayments();
 
         verify(paymentTxOps).applyReconcileResult(3L, PgOutcome.EXPLICIT_FAIL);
-        verify(paymentResultEventPublisher).publishFailed(any(PaymentFailEvent.class));
         verify(pointService, never()).rollbackPoint(any(), any(), any(), anyBoolean());
     }
 
@@ -138,8 +128,6 @@ class PaymentReconciliationSchedulerTest {
         scheduler.reconcilePayments();
 
         verify(pointService, never()).rollbackPoint(any(), any(), any(), anyBoolean());
-
-        verify(paymentResultEventPublisher).publishFailed(any(PaymentFailEvent.class));
     }
 
     @Test
@@ -154,7 +142,6 @@ class PaymentReconciliationSchedulerTest {
         scheduler.reconcilePayments();
 
         verify(paymentTxOps).applyReconcileResult(5L, PgOutcome.EXPLICIT_FAIL);
-        verify(paymentResultEventPublisher).publishFailed(any(PaymentFailEvent.class));
     }
 
     @Test
@@ -174,7 +161,7 @@ class PaymentReconciliationSchedulerTest {
 
         scheduler.reconcilePayments();
 
-        verify(paymentResultEventPublisher, never()).publishConfirmed(new PaymentConfirmEvent(1L, 6L));
-        verify(paymentResultEventPublisher).publishConfirmed(new PaymentConfirmEvent(1L, 7L));
+        verify(paymentTxOps).applyReconcileResult(6L, PgOutcome.SUCCESS);
+        verify(paymentTxOps).applyReconcileResult(7L, PgOutcome.SUCCESS);
     }
 }

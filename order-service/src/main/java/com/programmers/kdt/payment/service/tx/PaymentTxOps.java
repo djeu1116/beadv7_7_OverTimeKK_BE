@@ -1,10 +1,14 @@
 package com.programmers.kdt.payment.service.tx;
 
 import com.programmers.kdt.common.exception.BusinessException;
+import com.programmers.kdt.payment.client.pay.PaymentConfirmEvent;
+import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
 import com.programmers.kdt.payment.entity.Payment;
 import com.programmers.kdt.payment.entity.PaymentStatus;
+import com.programmers.kdt.payment.entity.outbox.OutboxEventType;
 import com.programmers.kdt.payment.exception.PaymentErrorCode;
 import com.programmers.kdt.payment.repository.PaymentRepository;
+import com.programmers.kdt.payment.service.OutboxEventWriter;
 import com.programmers.kdt.payment.service.PointService;
 import com.programmers.kdt.payment.service.util.PointEventIds;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +23,7 @@ public class PaymentTxOps {
 
     private final PaymentRepository paymentRepository;
     private final PointService pointService;
+    private final OutboxEventWriter outboxEventWriter;
 
     public record ReadyPaymentContext(Payment payment, Long usedPoint) {
     }
@@ -51,10 +56,13 @@ public class PaymentTxOps {
         return new ReadyPaymentContext(payment, usedPoint == null ? 0L : usedPoint);
     }
 
+    // 결과 반영 + outbox 기록을 같은 트랜잭션에 묶음 - 커밋 이후 이벤트 발행이 아니라
+    // outbox row로 남겨서, 커밋 후 relay가 못 넘어가더라도(크래시 등) 나중에 재시도되게 함
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Payment applyConfirmResult(Long paymentId, PgOutcome pgOutcome) {
         Payment payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new BusinessException(PaymentErrorCode.PAYMENT_NOT_FOUND));
+        PaymentStatus statusBefore = payment.getPaymentStatus();
         switch (pgOutcome) {
             case SUCCESS -> payment.confirmVerifiedSuccess();
             case EXPLICIT_FAIL -> payment.confirmVerifiedFail();
@@ -67,6 +75,7 @@ public class PaymentTxOps {
             throw new BusinessException(PaymentErrorCode.PAYMENT_CONCURRENT_MODIFICATION);
         }
 
+        enqueueResultEvent(payment, statusBefore, pgOutcome);
         return payment;
     }
 
@@ -74,6 +83,7 @@ public class PaymentTxOps {
     public Payment applyReconcileResult(Long paymentId, PgOutcome pgOutcome) {
         Payment payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new BusinessException(PaymentErrorCode.PAYMENT_NOT_FOUND));
+        PaymentStatus statusBefore = payment.getPaymentStatus();
         switch (pgOutcome) {
             case SUCCESS -> payment.confirmVerifiedSuccess();
             case EXPLICIT_FAIL -> payment.confirmVerifiedFail();
@@ -86,7 +96,23 @@ public class PaymentTxOps {
             throw new BusinessException(PaymentErrorCode.PAYMENT_CONCURRENT_MODIFICATION);
         }
 
+        enqueueResultEvent(payment, statusBefore, pgOutcome);
         return payment;
+    }
+
+    // 상태가 실제로 바뀐 경우에만 기록 - confirmVerifiedSuccess/Fail은 이미 같은 상태면 조용히 무시하므로,
+    // 그 경우까지 outbox에 넣으면 같은 이벤트가 중복 발행됨
+    private void enqueueResultEvent(Payment payment, PaymentStatus statusBefore, PgOutcome pgOutcome) {
+        if (payment.getPaymentStatus() == statusBefore) {
+            return;
+        }
+        switch (pgOutcome) {
+            case SUCCESS -> outboxEventWriter.enqueue(OutboxEventType.PAYMENT_CONFIRMED, payment.getId(),
+                    new PaymentConfirmEvent(payment.getOrderId(), payment.getId()));
+            case EXPLICIT_FAIL -> outboxEventWriter.enqueue(OutboxEventType.PAYMENT_FAILED, payment.getId(),
+                    new PaymentFailEvent(payment.getOrderId(), payment.getId(), PaymentErrorCode.PG_REQUEST_FAILED.getMessage()));
+            case AMBIGUOUS -> { }
+        }
     }
 }
 
