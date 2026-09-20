@@ -12,6 +12,9 @@ public interface OrderPaymentApi {
     // 결제 시작을 위한 주문 상태 전이(PENDING -> PAYMENT_STARTED). 만료 주문은 전이하지 않는다.
     StartPaymentResult startPayment(Long orderId);
 
+    // 결제 시작 전이를 되돌린다(PAYMENT_STARTED -> PENDING). 결제 쪽이 이후 단계에서 실패했을 때의 보상.
+    void cancelPaymentStart(Long orderId);
+
     Long findTicketId(Long orderId);
 
     List<PointEarnTargetView> findPointEarnTargets(List<Long> ticketIds);

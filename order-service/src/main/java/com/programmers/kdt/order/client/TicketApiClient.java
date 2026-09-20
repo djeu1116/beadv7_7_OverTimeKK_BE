@@ -24,12 +24,12 @@ import java.util.List;
 @RequiredArgsConstructor
 public class TicketApiClient implements TicketClient {
 
-    private final RestClient restClient;
+    private final RestClient performanceRestClient;
 
     @Override
     public void validateTicket(ValidateTicketRequest request){
         try{
-            restClient.post()
+            performanceRestClient.post()
                     .uri("/api/tickets/hold/validation")
                     .body(request)
                     .retrieve()
@@ -47,7 +47,7 @@ public class TicketApiClient implements TicketClient {
     @Override
     public void reserveTicket(TicketReserveRequest request){
         try {
-            restClient.put()
+            performanceRestClient.put()
                     .uri("/api/tickets/status/reserved")
                     .body(request)
                     .retrieve()
@@ -65,7 +65,7 @@ public class TicketApiClient implements TicketClient {
     @Override
     public void releaseSeat(TicketReleaseRequest request) {
         try {
-            restClient.put()
+            performanceRestClient.put()
                     .uri("/api/tickets/status/release")
                     .body(request)
                     .retrieve()
@@ -84,7 +84,7 @@ public class TicketApiClient implements TicketClient {
     @Override
     public void cancelTicket(TicketCancelRequest request) {
         try {
-            restClient.put()
+            performanceRestClient.put()
                     .uri("/api/tickets/status/canceled/release")
                     .body(request)
                     .retrieve()
@@ -103,7 +103,7 @@ public class TicketApiClient implements TicketClient {
     @Override
     public List<TicketInfo> getTickets(OrderTicketRequest request){
         try {
-            ApiResponse<List<TicketInfo>> response = restClient.post()
+            ApiResponse<List<TicketInfo>> response = performanceRestClient.post()
                     .uri("/api/tickets/orders")
                     .body(request)
                     .retrieve()

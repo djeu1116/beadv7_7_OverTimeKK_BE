@@ -117,6 +117,44 @@ class PaymentServiceImplTest {
         }
 
         @Test
+        @DisplayName("주문 전이 이후 단계가 실패하면 결제 시작 전이를 되돌린다 - 주문/결제가 다른 트랜잭션일 때 대비.")
+        void failureAfterOrderTransition_compensatesPaymentStart() {
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
+            when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
+            when(pgClient.ready(any())).thenThrow(new RuntimeException("PG 준비 실패"));
+
+            assertThatThrownBy(() -> paymentService.pay("idem-key", request, 1L))
+                    .isInstanceOf(BusinessException.class);
+
+            verify(orderClient).cancelPaymentStart(1L);
+        }
+
+        @Test
+        @DisplayName("주문 전이 전에 실패하면 보상하지 않는다 - 되돌릴 전이가 없음.")
+        void failureBeforeOrderTransition_doesNotCompensate() {
+            when(orderClient.findOrder(1L)).thenReturn(Optional.empty());
+
+            assertThatThrownBy(() -> paymentService.pay("idem-key", request, 1L))
+                    .isInstanceOf(BusinessException.class);
+
+            verify(orderClient, never()).cancelPaymentStart(any());
+        }
+
+        @Test
+        @DisplayName("보상 호출까지 실패해도 원래 예외가 사용자에게 전달된다.")
+        void compensationFailure_doesNotMaskOriginalError() {
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
+            when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
+            when(pgClient.ready(any())).thenThrow(new RuntimeException("PG 준비 실패"));
+            doThrow(new RuntimeException("주문 서비스 장애")).when(orderClient).cancelPaymentStart(1L);
+
+            assertThatThrownBy(() -> paymentService.pay("idem-key", request, 1L))
+                    .isInstanceOf(BusinessException.class)
+                    .extracting(e -> ((BusinessException) e).getErrorCode())
+                    .isEqualTo(PaymentErrorCode.PG_REQUEST_FAILED);
+        }
+
+        @Test
         @DisplayName("만료 주문과의 조건부 상태 전이에 실패하면 PG를 호출하지 않는다")
         void expiredOrderDoesNotRequestPg() {
             when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));

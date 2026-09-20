@@ -9,5 +9,7 @@ public interface OrderClient {
 
     StartPaymentOutcome startPayment(Long orderId);
 
+    void cancelPaymentStart(Long orderId);
+
     Long getTicketId(Long orderId);
 }

@@ -123,6 +123,26 @@ public class PaymentServiceImpl implements PaymentService{
             case STARTED -> { }
         }
 
+        // 여기부터는 주문이 이미 PAYMENT_STARTED로 전이된 뒤라, 실패하면 그 전이를 되돌려야 한다.
+        // 주문과 결제가 서로 다른 트랜잭션이면 이 메서드가 롤백돼도 주문 상태는 남기 때문.
+        try {
+            return readyPayment(request, order, existing);
+        } catch (RuntimeException e) {
+            compensatePaymentStart(request.orderId());
+            throw e;
+        }
+    }
+
+    // 주문 전이를 되돌리는 보상. 이 호출마저 실패하면 주문이 PAYMENT_STARTED로 남으므로 대사 대상으로 남긴다.
+    private void compensatePaymentStart(Long orderId) {
+        try {
+            orderClient.cancelPaymentStart(orderId);
+        } catch (Exception e) {
+            log.error("[PAYMENT_START_RECONCILIATION_NEEDED] 결제 시작 보상 실패 - orderId={}", orderId, e);
+        }
+    }
+
+    private CreatePaymentResponse readyPayment(CreatePaymentRequest request, OrderInfo order, Optional<Payment> existing) {
         // 주문 금액이 같은지 판별
         if (!order.totalAmount().equals(request.amount())) {
             throw new BusinessException(PaymentErrorCode.INVALID_PAYMENT_AMOUNT);

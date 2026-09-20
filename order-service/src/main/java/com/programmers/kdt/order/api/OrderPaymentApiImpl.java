@@ -56,6 +56,12 @@ public class OrderPaymentApiImpl implements OrderPaymentApi {
     }
 
     @Override
+    @Transactional
+    public void cancelPaymentStart(Long orderId) {
+        orderRepository.findById(orderId).ifPresent(Order::failPayment);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public Long findTicketId(Long orderId) {
         return orderItemRepository.findFirstByOrderId(orderId)

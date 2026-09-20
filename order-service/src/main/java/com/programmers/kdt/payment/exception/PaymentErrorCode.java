@@ -35,6 +35,7 @@ public enum PaymentErrorCode implements ErrorCode {
     DECRYPTION_FAILED(HttpStatus.INTERNAL_SERVER_ERROR, "PAY500_002", "결제 정보 복호화 중 오류가 발생했습니다."),
 
     PG_REQUEST_FAILED(HttpStatus.BAD_GATEWAY, "PAY502_001", "PG사 요청 처리 중 오류가 발생했습니다."),
+    ORDER_SERVICE_FAILED(HttpStatus.BAD_GATEWAY, "PAY502_002", "주문 처리 중 오류가 발생했습니다."),
     INVALID_PAYMENT_KEY(HttpStatus.BAD_GATEWAY, "PAY502_002", "PG사로부터 유효한 결제 키를 받지 못했습니다."),
     PERFORMANCE_SERVICE_REQUEST_FAILED(HttpStatus.BAD_GATEWAY, "PAY502_003", "공연 서비스 요청 처리 중 오류가 발생했습니다."),
     REFUND_SERVICE_FAILED(HttpStatus.BAD_REQUEST, "PAY502_004", "환불 처리 중 예외가 발생했습니다.")

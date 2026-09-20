@@ -4,10 +4,12 @@ import com.programmers.kdt.order.api.OrderPaymentApi;
 import com.programmers.kdt.payment.client.order.PointEarnTargetClient;
 import com.programmers.kdt.payment.dto.PointEarnTarget;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
+@Profile("!order-api")
 @Component
 @RequiredArgsConstructor
 public class LocalPointEarnTargetClient implements PointEarnTargetClient {
