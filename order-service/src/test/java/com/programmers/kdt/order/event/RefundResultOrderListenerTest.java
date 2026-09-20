@@ -1,8 +1,8 @@
 package com.programmers.kdt.order.event;
 
 import com.programmers.kdt.order.service.OrderService;
-import com.programmers.kdt.payment.client.refund.RefundCompletedEvent;
-import com.programmers.kdt.payment.client.refund.RefundFailedEvent;
+import com.programmers.kdt.common.contract.RefundCompletedEvent;
+import com.programmers.kdt.common.contract.RefundFailedEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

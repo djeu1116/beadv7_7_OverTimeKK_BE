@@ -120,6 +120,24 @@ CREATE TABLE `payment` (
   UNIQUE KEY `UKmf7n8wo2rwrxsd6f3t9ub2mep` (`order_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `order_outbox_event`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `order_outbox_event` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `event_type` varchar(50) NOT NULL,
+  `aggregate_id` bigint NOT NULL,
+  `payload` json NOT NULL,
+  `status` enum('PENDING','SENT','FAILED') NOT NULL DEFAULT 'PENDING',
+  `attempts` int NOT NULL DEFAULT '0',
+  `next_retry_at` datetime(6) NOT NULL,
+  `last_error` varchar(500) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_order_outbox_status_retry` (`status`,`next_retry_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `outbox_event`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;

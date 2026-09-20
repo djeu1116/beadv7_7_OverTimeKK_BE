@@ -1,5 +1,8 @@
 package com.programmers.kdt.payment.client.refund;
 
+import com.programmers.kdt.common.contract.RefundCompletedEvent;
+import com.programmers.kdt.common.contract.RefundFailedEvent;
+import com.programmers.kdt.common.contract.CompensationCompletedEvent;
 public interface RefundEventPublisher { // PaymentService는 해당 인터페이스만을 의존
 
     void publish(RefundRequestEvent event);
@@ -9,4 +12,6 @@ public interface RefundEventPublisher { // PaymentService는 해당 인터페이
     void publishFailed(RefundFailedEvent event);
 
     void publishCompensationRequested(CompensationRequestEvent event);
+
+    void publishCompensationCompleted(CompensationCompletedEvent event);
 }

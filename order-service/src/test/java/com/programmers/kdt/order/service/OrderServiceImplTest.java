@@ -14,15 +14,15 @@ import com.programmers.kdt.order.dto.ValidateTicketRequest;
 import com.programmers.kdt.order.entity.Order;
 import com.programmers.kdt.order.entity.OrderItem;
 import com.programmers.kdt.order.entity.OrderStatus;
+import com.programmers.kdt.common.contract.OrderCancelRequestedEvent;
 import com.programmers.kdt.order.entity.TicketCancelJob;
+import com.programmers.kdt.order.entity.outbox.OrderOutboxEventType;
+import com.programmers.kdt.order.service.OrderOutboxEventWriter;
 import com.programmers.kdt.order.event.TicketCancelRequestEvent;
 import com.programmers.kdt.order.event.TicketReleaseRequestEvent;
 import com.programmers.kdt.order.exception.OrderErrorCode;
 import com.programmers.kdt.order.repository.OrderRepository;
 import com.programmers.kdt.order.repository.TicketCancelJobRepository;
-import com.programmers.kdt.payment.dto.RefundPaymentRequest;
-import com.programmers.kdt.payment.service.PaymentService;
-import com.programmers.kdt.payment.dto.RefundPaymentRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -59,7 +59,7 @@ class OrderServiceImplTest {
     @Mock
     private TicketClient ticketClient;
     @Mock
-    private PaymentService paymentService;
+    private OrderOutboxEventWriter orderOutboxEventWriter;
     @Mock
     private ApplicationEventPublisher eventPublisher;
 
@@ -71,8 +71,8 @@ class OrderServiceImplTest {
                 orderRepository,
                 ticketCancelJobRepository,
                 ticketClient,
-                paymentService,
-                eventPublisher
+                eventPublisher,
+                orderOutboxEventWriter
         );
     }
 
@@ -231,9 +231,10 @@ class OrderServiceImplTest {
             );
 
             assertThat(response.orderStatus()).isEqualTo(OrderStatus.CANCEL_REQUESTED.name());
-            verify(paymentService).refund(
+            verify(orderOutboxEventWriter).enqueue(
+                    org.mockito.ArgumentMatchers.eq(OrderOutboxEventType.ORDER_CANCEL_REQUESTED),
                     org.mockito.ArgumentMatchers.eq(ORDER_ID),
-                    org.mockito.ArgumentMatchers.argThat(request -> request.reason().equals("단순 변심"))
+                    org.mockito.ArgumentMatchers.eq(new OrderCancelRequestedEvent(ORDER_ID, "단순 변심"))
             );
             verify(eventPublisher, never()).publishEvent(
                     any(TicketCancelRequestEvent.class)
@@ -255,9 +256,10 @@ class OrderServiceImplTest {
 
             assertThat(firstResponse.orderStatus()).isEqualTo(OrderStatus.CANCEL_REQUESTED.name());
             assertThat(secondResponse).isEqualTo(firstResponse);
-            verify(paymentService, org.mockito.Mockito.times(1)).refund(
+            verify(orderOutboxEventWriter, org.mockito.Mockito.times(1)).enqueue(
+                    org.mockito.ArgumentMatchers.eq(OrderOutboxEventType.ORDER_CANCEL_REQUESTED),
                     org.mockito.ArgumentMatchers.eq(ORDER_ID),
-                    any(RefundPaymentRequest.class)
+                    any(OrderCancelRequestedEvent.class)
             );
             verify(eventPublisher, never()).publishEvent(
                     any(TicketCancelRequestEvent.class)
@@ -330,6 +332,41 @@ class OrderServiceImplTest {
             assertThat(order.getOrderStatus()).isEqualTo(OrderStatus.COMPLETED);
             verify(eventPublisher, never()).publishEvent(
                     any(TicketCancelRequestEvent.class)
+            );
+        }
+    }
+
+    @Nested
+    @DisplayName("보상 완료 처리")
+    class HandleCompensation {
+
+        @Test
+        @DisplayName("보상 완료 시 PAYMENT_STARTED 주문을 CANCELLED로 종료하고 좌석 hold 해제 이벤트를 발행한다")
+        void failOrderAfterCompensation() {
+            Order order = paymentStartedOrder();
+            when(orderRepository.findByIdForUpdate(ORDER_ID)).thenReturn(Optional.of(order));
+
+            orderService.failOrderAfterCompensation(ORDER_ID);
+
+            assertThat(order.getOrderStatus()).isEqualTo(OrderStatus.CANCELLED);
+            verify(eventPublisher).publishEvent(
+                    new TicketReleaseRequestEvent(ORDER_ID, TICKET_ID, HOLD_KEY)
+            );
+            verifyNoInteractions(ticketCancelJobRepository);
+        }
+
+        @Test
+        @DisplayName("보상 완료 이벤트를 중복 처리해도 좌석 해제 이벤트는 한 번만 발행한다")
+        void duplicateFailOrderAfterCompensation() {
+            Order order = paymentStartedOrder();
+            when(orderRepository.findByIdForUpdate(ORDER_ID)).thenReturn(Optional.of(order));
+
+            orderService.failOrderAfterCompensation(ORDER_ID);
+            orderService.failOrderAfterCompensation(ORDER_ID);
+
+            assertThat(order.getOrderStatus()).isEqualTo(OrderStatus.CANCELLED);
+            verify(eventPublisher, times(1)).publishEvent(
+                    new TicketReleaseRequestEvent(ORDER_ID, TICKET_ID, HOLD_KEY)
             );
         }
     }

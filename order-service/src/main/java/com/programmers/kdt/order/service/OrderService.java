@@ -30,6 +30,9 @@ public interface OrderService {
     // 환불 실패 시 주문 취소 접수 복구
     void revertCancellation(Long orderId);
 
+    // 결제 후 후속 단계 실패로 보상(전액 환불)이 끝났을 때 주문 종료
+    void failOrderAfterCompensation(Long orderId);
+
     // 결제 실패 시 주문 상태 변경
     void handlePaymentFailed(Long orderId);
 }

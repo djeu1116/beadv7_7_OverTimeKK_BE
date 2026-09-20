@@ -1,11 +1,15 @@
 package com.programmers.kdt.payment.service;
 
 import com.programmers.kdt.common.exception.BusinessException;
-import com.programmers.kdt.order.entity.Order;
-import com.programmers.kdt.order.entity.OrderStatus;
-import com.programmers.kdt.order.repository.OrderRepository;
-import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
+import com.programmers.kdt.common.contract.PaymentFailEvent;
 import com.programmers.kdt.payment.client.pg.*;
+import com.programmers.kdt.common.contract.CompensationCompletedEvent;
+import com.programmers.kdt.common.contract.OrderCancelRequestedEvent;
+import com.programmers.kdt.common.contract.RefundCompletedEvent;
+import com.programmers.kdt.common.contract.RefundFailedEvent;
+import com.programmers.kdt.payment.client.order.OrderClient;
+import com.programmers.kdt.payment.client.order.OrderInfo;
+import com.programmers.kdt.payment.client.order.StartPaymentOutcome;
 import com.programmers.kdt.payment.client.refund.*;
 import com.programmers.kdt.payment.dto.*;
 import com.programmers.kdt.payment.entity.Payment;
@@ -51,7 +55,6 @@ import java.util.function.Supplier;
 public class PaymentServiceImpl implements PaymentService{
 
     private final PaymentRepository paymentRepository;
-    private final OrderRepository orderRepository;
     private final PaymentRefundRepository paymentRefundRepository;
     private final PerformanceClient performanceClient;
     private final OrderClient orderClient;
@@ -102,33 +105,26 @@ public class PaymentServiceImpl implements PaymentService{
 
     // 결제 생성
     private CreatePaymentResponse doPay(CreatePaymentRequest request, Long userId) {
-        Order order = orderRepository.findById(request.orderId())
+        OrderInfo order = orderClient.findOrder(request.orderId())
                 .orElseThrow(() -> new BusinessException(PaymentErrorCode.ORDER_NOT_FOUND));
 
-        if (!order.getUserId().equals(userId)) throw new BusinessException(PaymentErrorCode.PAYMENT_ACCESS_DENIED);
+        if (!order.userId().equals(userId)) throw new BusinessException(PaymentErrorCode.PAYMENT_ACCESS_DENIED);
 
         Optional<Payment> existing = paymentRepository.findByOrderId(request.orderId());
         if (existing.isPresent() && existing.get().getPaymentStatus() != PaymentStatus.FAILED) {
             throw new BusinessException(PaymentErrorCode.PAYMENT_ALREADY_EXISTS);
         }
 
-        LocalDateTime now = LocalDateTime.now();
-        int updatedRow = orderRepository.tryStartPayment(
-                order.getOrderId(),
-                OrderStatus.PENDING,
-                OrderStatus.PAYMENT_STARTED,
-                now
-        );
-
-        if(updatedRow == 0){
-            if(!order.getExpiresAt().isAfter(now)){
-                throw new BusinessException(PaymentErrorCode.ORDER_ALREADY_EXPIRED);
-            }
-            throw new BusinessException(PaymentErrorCode.ORDER_NOT_PENDING);
+        StartPaymentOutcome outcome = orderClient.startPayment(request.orderId());
+        switch (outcome) {
+            case EXPIRED -> throw new BusinessException(PaymentErrorCode.ORDER_ALREADY_EXPIRED);
+            case NOT_PENDING -> throw new BusinessException(PaymentErrorCode.ORDER_NOT_PENDING);
+            case NOT_FOUND -> throw new BusinessException(PaymentErrorCode.ORDER_NOT_FOUND);
+            case STARTED -> { }
         }
 
         // 주문 금액이 같은지 판별
-        if (!order.getTotalAmount().equals(request.amount())) {
+        if (!order.totalAmount().equals(request.amount())) {
             throw new BusinessException(PaymentErrorCode.INVALID_PAYMENT_AMOUNT);
         }
 
@@ -145,7 +141,7 @@ public class PaymentServiceImpl implements PaymentService{
         int attemptSeq = existing.map(p -> p.getAttemptSeq() + 1).orElse(0);
 
         if (usedPoint > 0) {
-            pointService.usePoint(order.getUserId(), usedPoint, PointEventIds.useEventId(request.orderId(), attemptSeq));
+            pointService.usePoint(order.userId(), usedPoint, PointEventIds.useEventId(request.orderId(), attemptSeq));
         }
 
         PgReadyResult readyResult = callPg("토스 결제 준비", request.orderId(),
@@ -155,7 +151,7 @@ public class PaymentServiceImpl implements PaymentService{
             payment = existing.get();
             payment.retryReady(readyResult.orderId(), attemptSeq);
         } else {
-            payment = Payment.create(order.getOrderId(), order.getUserId(), request.amount());
+            payment = Payment.create(order.orderId(), order.userId(), request.amount());
             payment.assignPgOrderId(readyResult.orderId());
         }
         paymentRepository.save(payment);
@@ -291,31 +287,43 @@ public class PaymentServiceImpl implements PaymentService{
                 .map(GetPaymentHistoryResponse::from);
     }
 
-    // 환불 요청(접수)
-    @Transactional
-    public RefundPaymentResponse refund(Long orderId, RefundPaymentRequest request) {
-        Payment payment = paymentRepository.findByOrderId(orderId)
+    // 주문 취소 접수를 받아 환불을 접수한다. 주문이 직접 호출하지 않고 주문 outbox 릴레이가 발행한다.
+    // 접수 거부(환불 기간 만료 등)도 예외가 아니라 실패 이벤트로 알려서 주문이 취소 접수를 되돌리게 한다.
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void onOrderCancelRequested(OrderCancelRequestedEvent event) {
+        Payment payment = paymentRepository.findByOrderId(event.orderId())
                 .orElseThrow(() -> new BusinessException(PaymentErrorCode.PAYMENT_NOT_FOUND));
 
+        // 이미 환불이 진행 중이거나 끝났으면 그 흐름이 주문 상태까지 정리한다 - 중복 수신 대비
+        if (payment.getPaymentStatus() == PaymentStatus.REFUND_PENDING
+                || payment.getPaymentStatus() == PaymentStatus.CANCELLED) {
+            log.info("이미 환불이 진행 중이거나 완료된 결제 - paymentId={}, status={}", payment.getId(), payment.getPaymentStatus());
+            return;
+        }
+
+        if (payment.getPaymentStatus() != PaymentStatus.PAID) {
+            finishRefundFailed(payment, PaymentErrorCode.INVALID_PAYMENT_STATUS.toString());
+            return;
+        }
+
         // 환불 가능 기간이 지났으면 접수 거부
-        Long ticketId = orderClient.getTicketId(orderId);
+        Long ticketId = orderClient.getTicketId(event.orderId());
         LocalDate performanceDate = performanceClient.getPerformanceDate(ticketId);
         double refundRate = RefundPolicy.resolveRefundRate(performanceDate, LocalDate.now());
         if (refundRate == 0.0) {
-            throw new BusinessException(PaymentErrorCode.REFUND_PERIOD_EXPIRED);
+            outboxEventWriter.enqueue(OutboxEventType.REFUND_FAILED, payment.getId(),
+                    new RefundFailedEvent(payment.getOrderId(), payment.getId(),
+                            PaymentErrorCode.REFUND_PERIOD_EXPIRED.toString()));
+            return;
         }
 
-        try {
-            payment.requestRefund();
-            paymentRepository.saveAndFlush(payment);
-        } catch(ObjectOptimisticLockingFailureException e) {
-            throw new BusinessException(PaymentErrorCode.PAYMENT_CONCURRENT_MODIFICATION);
-        }
+        // 낙관락 충돌은 예외를 그대로 올려서 릴레이가 재시도하게 둔다
+        payment.requestRefund();
+        paymentRepository.saveAndFlush(payment);
 
         outboxEventWriter.enqueue(OutboxEventType.REFUND_REQUESTED, payment.getId(),
-                new RefundRequestEvent(payment.getId(), request.reason(), LocalDateTime.now()));
-
-        return RefundPaymentResponse.from(payment);
+                new RefundRequestEvent(payment.getId(), event.reason(), LocalDateTime.now()));
     }
 
     // 환불 처리(PG사 호출) - outbox relay가 REFUND_REQUESTED를 재발행해서 호출함(동기 실행이어야
@@ -334,7 +342,12 @@ public class PaymentServiceImpl implements PaymentService{
                 finishRefundFailed(payment, PaymentErrorCode.REFUND_PERIOD_EXPIRED.toString());
                 return;
             }
-            executeRefund(payment, event.reason(), refundRate);
+            if (executeRefund(payment, event.reason(), refundRate)) {
+                outboxEventWriter.enqueue(OutboxEventType.REFUND_COMPLETED, payment.getId(),
+                        new RefundCompletedEvent(payment.getOrderId(), payment.getId()));
+            } else {
+                finishRefundFailed(payment, PaymentErrorCode.PG_REQUEST_FAILED.toString());
+            }
         } catch (Exception e) {
             log.error("환불 처리 중 예외 발생 - paymentID={}", payment.getId());
             finishRefundFailed(payment, PaymentErrorCode.REFUND_SERVICE_FAILED.toString());
@@ -357,29 +370,42 @@ public class PaymentServiceImpl implements PaymentService{
 
         try {
             payment.requestRefund();
-            executeRefund(payment, "TICKET_RESERVATION_FAILED", 1.0);
+            if (executeRefund(payment, "TICKET_RESERVATION_FAILED", 1.0)) {
+                // 주문은 CANCEL_REQUESTED를 거친 적이 없어서 고객 환불용 REFUND_COMPLETED가 아닌 별도 이벤트로 알림
+                outboxEventWriter.enqueue(OutboxEventType.COMPENSATION_COMPLETED, payment.getId(),
+                        new CompensationCompletedEvent(payment.getOrderId(), payment.getId()));
+            } else {
+                revertCompensation(payment, PaymentErrorCode.PG_REQUEST_FAILED.toString());
+            }
         } catch (Exception e) {
             log.error("보상 처리 중 예외 발생 - paymentId={}", payment.getId(), e);
-            finishRefundFailed(payment, "COMPENSATION_FAILED");
+            revertCompensation(payment, "COMPENSATION_FAILED");
         }
     }
 
-    // PG취소 + 환불이력저장 + completeRefund + 포인트롤백 + 결과 outbox 기록 (고객 환불/시스템 보상 공유)
-    private void executeRefund(Payment payment, String reason, double refundRate) {
+    // 보상 실패 - 결제는 PAID로 되돌리고 주문 쪽에는 알리지 않음(주문이 CANCEL_REQUESTED가 아니라서 환불 실패 이벤트를 받을 수 없음).
+    // 자동 재시도 수단이 없어 로그 마커 기반 수동 대사 대상
+    private void revertCompensation(Payment payment, String failReason) {
+        payment.failRefund();
+        paymentRepository.save(payment);
+        log.error("[COMPENSATION_RECONCILIATION_NEEDED] 보상(PG 취소) 실패 - paymentId={}, orderId={}, reason={}",
+                payment.getId(), payment.getOrderId(), failReason);
+    }
+
+    // PG취소 + 환불이력저장 + completeRefund + 포인트롤백 (고객 환불/시스템 보상 공유)
+    // PG 취소가 거절되면 아무 것도 바꾸지 않고 false - 결과 알림(outbox)은 호출하는 쪽이 성격에 맞게 기록
+    private boolean executeRefund(Payment payment, String reason, double refundRate) {
         Long usedPoint = getUsedPointForOrder(payment);
         Long pgPaidAmount = payment.getAmount() - usedPoint;
         Long refundAmount = RefundPolicy.calculateRefundAmount(pgPaidAmount, refundRate);
         PgCancelResult cancelResult = pgClient.cancel(new PgCancelCommand(payment.getPaymentKey(), refundAmount, reason));
 
         if (!cancelResult.success()) {
-            finishRefundFailed(payment, PaymentErrorCode.PG_REQUEST_FAILED.toString());
-            return;
+            return false;
         }
 
         paymentRefundRepository.save(PaymentRefund.create(payment.getId(), refundAmount, reason));
         payment.completeRefund(refundAmount);
-        outboxEventWriter.enqueue(OutboxEventType.REFUND_COMPLETED, payment.getId(),
-                new RefundCompletedEvent(payment.getOrderId(), payment.getId()));
 
         if (usedPoint > 0) {
             try {
@@ -389,6 +415,7 @@ public class PaymentServiceImpl implements PaymentService{
                 log.error("[REFUND_POST_PROCESS_FAILED] 환불은 완료됐으나 후처리 실패 - paymentId={}", payment.getId(), e);
             }
         }
+        return true;
     }
 
     private void finishRefundFailed(Payment payment, String failReason) {

@@ -1,5 +1,6 @@
 package com.programmers.kdt.payment.service;
 
+import com.programmers.kdt.common.contract.OrderCancelRequestedEvent;
 import com.programmers.kdt.payment.client.refund.CompensationRequestEvent;
 import com.programmers.kdt.payment.client.refund.RefundRequestEvent;
 import com.programmers.kdt.payment.dto.*;
@@ -20,8 +21,8 @@ public interface PaymentService {
     // 결제 내역 조회
     Page<GetPaymentHistoryResponse> getPaymentHistory(Long userId, Pageable pageable);
 
-    // 전액 환불
-    RefundPaymentResponse refund(Long orderId, RefundPaymentRequest request);
+    // 주문 취소 접수 수신 - 환불 접수
+    void onOrderCancelRequested(OrderCancelRequestedEvent event);
 
     void onRefundRequested(RefundRequestEvent event);
 

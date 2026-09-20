@@ -3,11 +3,13 @@ package com.programmers.kdt.payment.service;
 
 import com.programmers.kdt.common.exception.BusinessException;
 import com.programmers.kdt.common.exception.CommonErrorCode;
-import com.programmers.kdt.order.entity.Order;
-import com.programmers.kdt.order.entity.OrderStatus;
-import com.programmers.kdt.order.repository.OrderRepository;
-import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
+import com.programmers.kdt.common.contract.PaymentFailEvent;
 import com.programmers.kdt.payment.client.pg.*;
+import com.programmers.kdt.common.contract.OrderCancelRequestedEvent;
+import com.programmers.kdt.common.contract.RefundFailedEvent;
+import com.programmers.kdt.payment.client.order.OrderClient;
+import com.programmers.kdt.payment.client.order.OrderInfo;
+import com.programmers.kdt.payment.client.order.StartPaymentOutcome;
 import com.programmers.kdt.payment.client.refund.*;
 import com.programmers.kdt.payment.dto.*;
 import com.programmers.kdt.payment.entity.Payment;
@@ -50,8 +52,6 @@ class PaymentServiceImplTest {
     @Mock
     private PaymentRepository paymentRepository;
     @Mock
-    private OrderRepository orderRepository;
-    @Mock
     private PaymentRefundRepository paymentRefundRepository;
     @Mock
     private PgClient pgClient;
@@ -76,12 +76,10 @@ class PaymentServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        paymentService = new PaymentServiceImpl(paymentRepository, orderRepository, paymentRefundRepository, performanceClient, orderClient, pgClient, pointService, idempotencyKeyService, objectMapper, paymentTxOps, outboxEventWriter);
+        paymentService = new PaymentServiceImpl(paymentRepository, paymentRefundRepository, performanceClient, orderClient, pgClient, pointService, idempotencyKeyService, objectMapper, paymentTxOps, outboxEventWriter);
         lenient().when(idempotencyKeyService.generate(any(String.class), any(String.class))).thenReturn(Optional.empty());
         lenient().when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        lenient().when(orderRepository.tryStartPayment(
-                anyLong(), eq(OrderStatus.PENDING), eq(OrderStatus.PAYMENT_STARTED), any(LocalDateTime.class)
-        )).thenReturn(1);
+        lenient().when(orderClient.startPayment(anyLong())).thenReturn(StartPaymentOutcome.STARTED);
     }
 
     @Nested
@@ -93,17 +91,13 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("정상 요청이면 결제가 생성된다.")
         void successPayment() {
-            Order order = mock(Order.class);
-            when(order.getOrderId()).thenReturn(1L);
-            when(order.getUserId()).thenReturn(1L);
-            when(order.getTotalAmount()).thenReturn(10000L);
 
             PgReadyResult readyResult = mock(PgReadyResult.class);
             when(readyResult.transactionKey()).thenReturn("PG_KEY_123");
             when(readyResult.orderId()).thenReturn("PG_ORDER_1");
             when(readyResult.redirectionUrl()).thenReturn("https://pg.example/redirect");
 
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
             when(pgClient.ready(any())).thenReturn(readyResult);
 
@@ -119,23 +113,15 @@ class PaymentServiceImplTest {
             assertThat(saved.getOrderId()).isEqualTo(1L);
             assertThat(saved.getUserId()).isEqualTo(1L);
             assertThat(saved.getPaymentStatus()).isEqualTo(PaymentStatus.READY);
-            verify(orderRepository).tryStartPayment(
-                    eq(1L), eq(OrderStatus.PENDING), eq(OrderStatus.PAYMENT_STARTED), any(LocalDateTime.class)
-            );
+            verify(orderClient).startPayment(1L);
         }
 
         @Test
         @DisplayName("만료 주문과의 조건부 상태 전이에 실패하면 PG를 호출하지 않는다")
         void expiredOrderDoesNotRequestPg() {
-            Order order = mock(Order.class);
-            when(order.getOrderId()).thenReturn(1L);
-            when(order.getUserId()).thenReturn(1L);
-            when(order.getExpiresAt()).thenReturn(LocalDateTime.now().minusSeconds(1));
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
-            when(orderRepository.tryStartPayment(
-                    eq(1L), eq(OrderStatus.PENDING), eq(OrderStatus.PAYMENT_STARTED), any(LocalDateTime.class)
-            )).thenReturn(0);
+            when(orderClient.startPayment(1L)).thenReturn(StartPaymentOutcome.EXPIRED);
 
             assertThatThrownBy(() -> paymentService.pay("idem-key", request, 1L))
                     .isInstanceOf(BusinessException.class)
@@ -149,15 +135,9 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("만료 전이 외의 상태 변경으로 결제 시작에 실패해도 PG를 호출하지 않는다")
         void nonPendingOrderDoesNotRequestPg() {
-            Order order = mock(Order.class);
-            when(order.getOrderId()).thenReturn(1L);
-            when(order.getUserId()).thenReturn(1L);
-            when(order.getExpiresAt()).thenReturn(LocalDateTime.now().plusMinutes(1));
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
-            when(orderRepository.tryStartPayment(
-                    eq(1L), eq(OrderStatus.PENDING), eq(OrderStatus.PAYMENT_STARTED), any(LocalDateTime.class)
-            )).thenReturn(0);
+            when(orderClient.startPayment(1L)).thenReturn(StartPaymentOutcome.NOT_PENDING);
 
             assertThatThrownBy(() -> paymentService.pay("idem-key", request, 1L))
                     .isInstanceOf(BusinessException.class)
@@ -171,9 +151,6 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("이전에 실패한 결제가 있으면 재시도로 처리된다.")
         void successPaymentRetryAfterFailed() {
-            Order order = mock(Order.class);
-            when(order.getUserId()).thenReturn(1L);
-            when(order.getTotalAmount()).thenReturn(10000L);
 
             PgReadyResult readyResult = mock(PgReadyResult.class);
             when(readyResult.transactionKey()).thenReturn("PG_KEY_123");
@@ -183,7 +160,7 @@ class PaymentServiceImplTest {
             Payment failedPayment = Payment.create(1L, 1L, 10000L);
             failedPayment.fail();
 
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.of(failedPayment));
             when(pgClient.ready(any())).thenReturn(readyResult);
 
@@ -199,10 +176,6 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("실패 후 재시도하면 attemptSeq가 증가하고, 포인트 사용 이벤트ID도 이전 시도와 달라진다.")
         void retryAfterFailed_usesDistinctAttemptSeqAndPointEventId() {
-            Order order = mock(Order.class);
-            when(order.getOrderId()).thenReturn(1L);
-            when(order.getUserId()).thenReturn(1L);
-            when(order.getTotalAmount()).thenReturn(10000L);
 
             PgReadyResult readyResult = mock(PgReadyResult.class);
             when(readyResult.transactionKey()).thenReturn("PG_KEY_123");
@@ -211,7 +184,7 @@ class PaymentServiceImplTest {
             Payment failedPayment = Payment.create(1L, 1L, 10000L); // attemptSeq=0으로 생성된 1차 시도
             failedPayment.fail();
 
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.of(failedPayment));
             when(pgClient.ready(any())).thenReturn(readyResult);
 
@@ -232,7 +205,7 @@ class PaymentServiceImplTest {
         @DisplayName("주문이 존재하지 않으면 예외가 발생한다.")
         void payOrderNotFound() {
 
-            when(orderRepository.findById(1L)).thenReturn(Optional.empty());
+            when(orderClient.findOrder(1L)).thenReturn(Optional.empty());
 
             assertThatThrownBy(() -> paymentService.pay("idem-key", request, 1L))
                     .isInstanceOf(BusinessException.class)
@@ -245,12 +218,10 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("이미 결제가 생성된 주문이면 예외가 발생한다.")
         void payAlreadyExists() {
-            Order order = mock(Order.class);
-            when(order.getUserId()).thenReturn(1L);
 
             Payment existingPayment = Payment.create(1L, 1L, 10000L);
 
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.of(existingPayment));
 
             assertThatThrownBy(() -> paymentService.pay("idem-key", request, 1L))
@@ -265,12 +236,9 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("요청 금액이 주문 금액과 다르면 예외가 발생한다.")
         void payAmountMismatch() {
-            Order order = mock(Order.class);
-            when(order.getUserId()).thenReturn(1L);
-            when(order.getTotalAmount()).thenReturn(15000L);
 
 
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 15000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
 
             assertThatThrownBy(() -> paymentService.pay("idem-key", request, 1L))
@@ -286,11 +254,8 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("PG사 요청이 실패하면 예외가 발생하고 저장되지 않는다.")
         void payPgFailure() {
-            Order order = mock(Order.class);
-            when(order.getUserId()).thenReturn(1L);
-            when(order.getTotalAmount()).thenReturn(10000L);
 
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
             when(pgClient.ready(any())).thenThrow(new PgClientException("PG_ERR_001", "카드 승인 거절"));
 
@@ -305,14 +270,10 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("포인트를 사용하면 PG 요청 금액이 차감되고 pointService.usePoint가 호출된다.")
         void successPaymentWithPoint() {
-            Order order = mock(Order.class);
-            when(order.getOrderId()).thenReturn(1L);
-            when(order.getUserId()).thenReturn(1L);
-            when(order.getTotalAmount()).thenReturn(10000L);
 
             PgReadyResult readyResult = mock(PgReadyResult.class);
             when(readyResult.transactionKey()).thenReturn("PG_KEY_123");
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
 
             when(pgClient.ready(any())).thenReturn(readyResult);
@@ -333,15 +294,11 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("사용 포인트가 없으면 pointService는 호출되지 않는다.")
         void successPaymentWithoutPoint() {
-            Order order = Mockito.mock(Order.class);
-            when(order.getOrderId()).thenReturn(1L);
-            when(order.getUserId()).thenReturn(1L);
-            when(order.getTotalAmount()).thenReturn(10000L);
 
             PgReadyResult readyResult = mock(PgReadyResult.class);
             when(readyResult.transactionKey()).thenReturn("PG_KEY_123");
 
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
             when(pgClient.ready(any())).thenReturn(readyResult);
 
@@ -353,11 +310,8 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("사용 포인트가 음수면 예외가 발생한다.")
         void payUsedPointNegative() {
-            Order order = Mockito.mock(Order.class);
-            when(order.getUserId()).thenReturn(1L);
-            when(order.getTotalAmount()).thenReturn(10000L);
 
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
 
             CreatePaymentRequest invalidRequest = new CreatePaymentRequest(1L, 10000L, -100L);
@@ -373,11 +327,8 @@ class PaymentServiceImplTest {
         @Test
         @DisplayName("사용 포인트가 주문 금액보다 크면 예외가 발생한다.")
         void payUsedPointExceedsAmount() {
-            Order order = Mockito.mock(Order.class);
-            when(order.getUserId()).thenReturn(1L);
-            when(order.getTotalAmount()).thenReturn(10000L);
 
-            when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
             when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
 
             CreatePaymentRequest invalidRequest = new CreatePaymentRequest(1L, 10000L, 15000L);
@@ -761,7 +712,7 @@ class PaymentServiceImplTest {
     @DisplayName("전액 환불")
     class FullRefund {
         @Test
-        @DisplayName("전액 취소 중 동시성 충돌이 발생하면 예외가 발생하고 PG 요청은 나가지 않는다.")
+        @DisplayName("전액 취소 접수 중 동시성 충돌이 발생하면 예외가 전파되고(릴레이가 재시도) PG 요청은 나가지 않는다.")
         void refundConcurrentModification() {
             Payment payment = Payment.create(1L, 100L, 10000L);
             payment.assignPaymentKey("PG_KEY_123");
@@ -773,18 +724,55 @@ class PaymentServiceImplTest {
             when(paymentRepository.saveAndFlush(payment))
                     .thenThrow(new ObjectOptimisticLockingFailureException(Payment.class, 1L));
 
-            assertThatThrownBy(() -> paymentService.refund(1L, new RefundPaymentRequest("고객 요청")))
-                    .isInstanceOf(BusinessException.class)
-                    .extracting(e -> ((BusinessException) e).getErrorCode())
-                    .isEqualTo(PaymentErrorCode.PAYMENT_CONCURRENT_MODIFICATION);
+            assertThatThrownBy(() -> paymentService.onOrderCancelRequested(new OrderCancelRequestedEvent(1L, "고객 요청")))
+                    .isInstanceOf(ObjectOptimisticLockingFailureException.class);
 
             verifyNoInteractions(pgClient);
         }
 
         @Test
-        @DisplayName("환불 가능 기간이 지나면 접수 자체가 거부되고 결제 상태는 그대로 유지된다.")
+        @DisplayName("주문 취소 접수를 받으면 결제가 REFUND_PENDING으로 바뀌고 환불 요청이 기록된다.")
+        void acceptsRefundOnOrderCancelRequested() {
+            Payment payment = Payment.create(1L, 100L, 10000L);
+            ReflectionTestUtils.setField(payment, "id", 1L);
+            payment.assignPaymentKey("PG_KEY_123");
+            payment.approve();
+
+            when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.of(payment));
+            when(orderClient.getTicketId(1L)).thenReturn(10L);
+            when(performanceClient.getPerformanceDate(10L)).thenReturn(LocalDate.now().plusDays(4));
+
+            paymentService.onOrderCancelRequested(new OrderCancelRequestedEvent(1L, "단순 변심"));
+
+            assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.REFUND_PENDING);
+            ArgumentCaptor<RefundRequestEvent> captor = ArgumentCaptor.forClass(RefundRequestEvent.class);
+            verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_REQUESTED), eq(1L), captor.capture());
+            assertThat(captor.getValue().reason()).isEqualTo("단순 변심");
+            verifyNoInteractions(pgClient);
+        }
+
+        @Test
+        @DisplayName("이미 환불이 진행 중이면 중복 접수하지 않는다 - 취소 접수 이벤트 중복 수신 대비.")
+        void duplicateOrderCancelRequestedIsIgnored() {
+            Payment payment = Payment.create(1L, 100L, 10000L);
+            ReflectionTestUtils.setField(payment, "id", 1L);
+            payment.assignPaymentKey("PG_KEY_123");
+            payment.approve();
+            payment.requestRefund();
+
+            when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.of(payment));
+
+            paymentService.onOrderCancelRequested(new OrderCancelRequestedEvent(1L, "단순 변심"));
+
+            assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.REFUND_PENDING);
+            verifyNoInteractions(outboxEventWriter, pgClient, orderClient, performanceClient);
+        }
+
+        @Test
+        @DisplayName("환불 가능 기간이 지나면 접수가 거부되고, 주문이 취소 접수를 되돌리도록 실패 이벤트가 기록된다.")
         void refundRejectedWhenPeriodExpired() {
             Payment payment = Payment.create(1L, 100L, 10000L);
+            ReflectionTestUtils.setField(payment, "id", 1L);
             payment.assignPaymentKey("PG_KEY_123");
             payment.approve();
 
@@ -792,15 +780,15 @@ class PaymentServiceImplTest {
             when(orderClient.getTicketId(1L)).thenReturn(10L);
             when(performanceClient.getPerformanceDate(10L)).thenReturn(LocalDate.now()); // 공연 당일 -> rate 0.0
 
-            assertThatThrownBy(() -> paymentService.refund(1L, new RefundPaymentRequest("고객 요청")))
-                    .isInstanceOf(BusinessException.class)
-                    .extracting(e -> ((BusinessException) e).getErrorCode())
-                    .isEqualTo(PaymentErrorCode.REFUND_PERIOD_EXPIRED);
+            paymentService.onOrderCancelRequested(new OrderCancelRequestedEvent(1L, "고객 요청"));
 
             assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
             verifyNoInteractions(pgClient, paymentRefundRepository);
             verify(paymentRepository, never()).saveAndFlush(any());
-            verifyNoInteractions(outboxEventWriter);
+            ArgumentCaptor<RefundFailedEvent> captor = ArgumentCaptor.forClass(RefundFailedEvent.class);
+            verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_FAILED), eq(1L), captor.capture());
+            assertThat(captor.getValue().reason()).isEqualTo(PaymentErrorCode.REFUND_PERIOD_EXPIRED.toString());
+            verify(outboxEventWriter, never()).enqueue(eq(OutboxEventType.REFUND_REQUESTED), any(), any());
         }
     }
 
@@ -1158,7 +1146,9 @@ class PaymentServiceImplTest {
             assertThat(captor.getValue().cancelAmount()).isEqualTo(10000L);
 
             verifyNoInteractions(orderClient, performanceClient); // 환불 기간/정책 조회를 아예 안 탐
-            verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_COMPLETED), eq(1L), any());
+            // 고객 환불용 REFUND_COMPLETED(주문 CANCEL_REQUESTED 전제)가 아니라 보상 전용 이벤트로 기록
+            verify(outboxEventWriter).enqueue(eq(OutboxEventType.COMPENSATION_COMPLETED), eq(1L), any());
+            verify(outboxEventWriter, never()).enqueue(eq(OutboxEventType.REFUND_COMPLETED), any(), any());
         }
 
         @Test
@@ -1180,7 +1170,7 @@ class PaymentServiceImplTest {
         }
 
         @Test
-        @DisplayName("PG 취소가 실패하면 결제는 PAID로 복귀하고 실패 이벤트가 기록된다.")
+        @DisplayName("PG 취소가 실패하면 결제는 PAID로 복귀하고, 주문 쪽 이벤트는 기록하지 않는다 - 수동 대사 대상.")
         void pgCancelFails_revertsToPaid() {
             Payment payment = Payment.create(1L, 100L, 10000L);
             ReflectionTestUtils.setField(payment, "id", 1L);
@@ -1194,8 +1184,7 @@ class PaymentServiceImplTest {
             paymentService.onRefundRequested(new CompensationRequestEvent(1L));
 
             assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
-            verifyNoInteractions(paymentRefundRepository);
-            verify(outboxEventWriter).enqueue(eq(OutboxEventType.REFUND_FAILED), eq(1L), any());
+            verifyNoInteractions(paymentRefundRepository, outboxEventWriter);
         }
 
         @Test

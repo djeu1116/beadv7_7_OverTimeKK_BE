@@ -1,5 +1,7 @@
 package com.programmers.kdt.payment.client.pay;
 
+import com.programmers.kdt.common.contract.PaymentConfirmEvent;
+import com.programmers.kdt.common.contract.PaymentFailEvent;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;

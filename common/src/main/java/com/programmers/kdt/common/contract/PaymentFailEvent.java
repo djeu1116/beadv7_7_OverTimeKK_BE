@@ -1,4 +1,4 @@
-package com.programmers.kdt.payment.client.pay;
+package com.programmers.kdt.common.contract;
 
 public record PaymentFailEvent(
         Long orderId,

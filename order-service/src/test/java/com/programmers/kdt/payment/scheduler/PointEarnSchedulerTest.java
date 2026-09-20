@@ -6,7 +6,7 @@ import com.programmers.kdt.payment.client.point.EndedPerformanceClient;
 import com.programmers.kdt.payment.client.point.EndedTicket;
 import com.programmers.kdt.payment.dto.PointEarnTarget;
 import com.programmers.kdt.payment.exception.PointErrorCode;
-import com.programmers.kdt.payment.repository.PointEarnTargetRepository;
+import com.programmers.kdt.payment.client.order.PointEarnTargetClient;
 import com.programmers.kdt.payment.service.PointService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -30,7 +30,7 @@ class PointEarnSchedulerTest {
     private EndedPerformanceClient endedPerformanceClient;
 
     @Mock
-    private PointEarnTargetRepository pointEarnTargetRepository;
+    private PointEarnTargetClient pointEarnTargetClient;
 
     @Mock
     private PointService pointService;
@@ -39,7 +39,7 @@ class PointEarnSchedulerTest {
 
     @BeforeEach
     void setUp() {
-        scheduler = new PointEarnScheduler(endedPerformanceClient, pointEarnTargetRepository, pointService);
+        scheduler = new PointEarnScheduler(endedPerformanceClient, pointEarnTargetClient, pointService);
     }
 
     @Test
@@ -49,7 +49,7 @@ class PointEarnSchedulerTest {
 
         scheduler.earnPointsForEndedPerformances();
 
-        verifyNoInteractions(pointEarnTargetRepository);
+        verifyNoInteractions(pointEarnTargetClient);
         verifyNoInteractions(pointService);
     }
 
@@ -72,7 +72,7 @@ class PointEarnSchedulerTest {
     void earnSuccess_computesOnePercentPerTicket() {
         when(endedPerformanceClient.findEndedTickets(any(), any()))
                 .thenReturn(List.of(new EndedTicket(1L, 100L), new EndedTicket(1L, 101L)));
-        when(pointEarnTargetRepository.findEarnTargetsByTicketIds(anyList()))
+        when(pointEarnTargetClient.findEarnTargets(anyList()))
                 .thenReturn(List.of(
                         new PointEarnTarget(10L, 100L, 50_000L),
                         new PointEarnTarget(20L, 101L, 30_000L)
@@ -89,7 +89,7 @@ class PointEarnSchedulerTest {
     void earnAmountZeroOrLess_skipped() {
         when(endedPerformanceClient.findEndedTickets(any(), any()))
                 .thenReturn(List.of(new EndedTicket(1L, 100L)));
-        when(pointEarnTargetRepository.findEarnTargetsByTicketIds(anyList()))
+        when(pointEarnTargetClient.findEarnTargets(anyList()))
                 .thenReturn(List.of(new PointEarnTarget(10L, 100L, 49L)));
 
         scheduler.earnPointsForEndedPerformances();
@@ -105,7 +105,7 @@ class PointEarnSchedulerTest {
 
         when(endedPerformanceClient.findEndedTickets(from, to))
                 .thenReturn(List.of(new EndedTicket(1L, 100L)));
-        when(pointEarnTargetRepository.findEarnTargetsByTicketIds(anyList()))
+        when(pointEarnTargetClient.findEarnTargets(anyList()))
                 .thenReturn(List.of(new PointEarnTarget(10L, 100L, 50_000L)));
 
         assertThatCode(() -> scheduler.earnPointsForEndedPerformances(from, to))
@@ -119,7 +119,7 @@ class PointEarnSchedulerTest {
     void partialFailure_continuesProcessingOthers() {
         when(endedPerformanceClient.findEndedTickets(any(), any()))
                 .thenReturn(List.of(new EndedTicket(1L, 100L), new EndedTicket(1L, 101L)));
-        when(pointEarnTargetRepository.findEarnTargetsByTicketIds(anyList()))
+        when(pointEarnTargetClient.findEarnTargets(anyList()))
                 .thenReturn(List.of(
                         new PointEarnTarget(10L, 100L, 50_000L),
                         new PointEarnTarget(20L, 101L, 30_000L)
@@ -138,7 +138,7 @@ class PointEarnSchedulerTest {
     void noMatchingOrderItems_noEarn() {
         when(endedPerformanceClient.findEndedTickets(any(), any()))
                 .thenReturn(List.of(new EndedTicket(1L, 100L)));
-        when(pointEarnTargetRepository.findEarnTargetsByTicketIds(anyList()))
+        when(pointEarnTargetClient.findEarnTargets(anyList()))
                 .thenReturn(List.of());
 
         scheduler.earnPointsForEndedPerformances();
@@ -151,7 +151,7 @@ class PointEarnSchedulerTest {
     void concurrentModification_exhaustsRetries() {
         when(endedPerformanceClient.findEndedTickets(any(), any()))
                 .thenReturn(List.of(new EndedTicket(1L, 100L)));
-        when(pointEarnTargetRepository.findEarnTargetsByTicketIds(anyList()))
+        when(pointEarnTargetClient.findEarnTargets(anyList()))
                 .thenReturn(List.of(new PointEarnTarget(10L, 100L, 50_000L)));
         doThrow(new BusinessException(PointErrorCode.POINT_CONCURRENT_MODIFICATION))
                 .when(pointService).earnPoint(10L, 500L, "TICKET:100:POINT_EARN");
@@ -166,7 +166,7 @@ class PointEarnSchedulerTest {
     void concurrentModification_succeedsOnRetry() {
         when(endedPerformanceClient.findEndedTickets(any(), any()))
                 .thenReturn(List.of(new EndedTicket(1L, 100L)));
-        when(pointEarnTargetRepository.findEarnTargetsByTicketIds(anyList()))
+        when(pointEarnTargetClient.findEarnTargets(anyList()))
                 .thenReturn(List.of(new PointEarnTarget(10L, 100L, 50_000L)));
         doThrow(new BusinessException(PointErrorCode.POINT_CONCURRENT_MODIFICATION))
                 .doNothing()
@@ -186,7 +186,7 @@ class PointEarnSchedulerTest {
         assertThatCode(() -> scheduler.earnPointsForEndedPerformances())
                 .doesNotThrowAnyException();
 
-        verifyNoInteractions(pointEarnTargetRepository);
+        verifyNoInteractions(pointEarnTargetClient);
         verifyNoInteractions(pointService);
     }
 
@@ -195,7 +195,7 @@ class PointEarnSchedulerTest {
     void findEarnTargetsFails_doesNotPropagate() {
         when(endedPerformanceClient.findEndedTickets(any(), any()))
                 .thenReturn(List.of(new EndedTicket(1L, 100L)));
-        when(pointEarnTargetRepository.findEarnTargetsByTicketIds(anyList()))
+        when(pointEarnTargetClient.findEarnTargets(anyList()))
                 .thenThrow(new RuntimeException("DB 오류"));
 
         assertThatCode(() -> scheduler.earnPointsForEndedPerformances())
@@ -225,7 +225,7 @@ class PointEarnSchedulerTest {
         LocalDate to = LocalDate.of(2026, 8, 2);
         when(endedPerformanceClient.findEndedTickets(from, to))
                 .thenReturn(List.of(new EndedTicket(1L, 100L)));
-        when(pointEarnTargetRepository.findEarnTargetsByTicketIds(anyList()))
+        when(pointEarnTargetClient.findEarnTargets(anyList()))
                 .thenReturn(List.of(new PointEarnTarget(10L, 100L, 50_000L)));
 
         scheduler.earnPointsForEndedPerformances(from, to);

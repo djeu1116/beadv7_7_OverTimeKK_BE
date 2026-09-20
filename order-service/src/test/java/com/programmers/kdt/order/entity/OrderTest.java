@@ -561,4 +561,52 @@ public class OrderTest {
                     );
         }
     }
+
+    @Nested
+    @DisplayName("결제 후 후속 단계 영구 실패로 인한 보상 종료")
+    public class FailAfterPayment {
+
+        private Order paymentStartedOrder() {
+            Order order = Order.create(1L, createItems(), expiresAt);
+            order.startPayment(expiresAt.minusSeconds(1));
+            return order;
+        }
+
+        @Test
+        @DisplayName("PAYMENT_STARTED 주문이 CANCELLED로 전이되고 true를 반환한다.")
+        void failAfterPayment() {
+            Order order = paymentStartedOrder();
+
+            boolean transitioned = order.failAfterPayment();
+
+            assertThat(transitioned).isTrue();
+            assertThat(order.getOrderStatus()).isEqualTo(OrderStatus.CANCELLED);
+            assertThat(order.getCancelledAt()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("이미 CANCELLED면 아무것도 하지 않고 false를 반환한다 - 중복 이벤트 수신 대비.")
+        void alreadyCancelled_isNoOp() {
+            Order order = paymentStartedOrder();
+            order.failAfterPayment();
+
+            boolean transitioned = order.failAfterPayment();
+
+            assertThat(transitioned).isFalse();
+            assertThat(order.getOrderStatus()).isEqualTo(OrderStatus.CANCELLED);
+        }
+
+        @Test
+        @DisplayName("PAYMENT_STARTED가 아닌 주문(예: PENDING)이면 예외가 발생한다.")
+        void notPaymentStarted_throws() {
+            Order order = Order.create(1L, createItems(), expiresAt);
+
+            assertThatThrownBy(order::failAfterPayment)
+                    .isInstanceOfSatisfying(
+                            BusinessException.class,
+                            exception -> assertThat(exception.getErrorCode())
+                                    .isEqualTo(OrderErrorCode.ORDER_NOT_PAYMENT_STARTED)
+                    );
+        }
+    }
 }

@@ -1,9 +1,13 @@
 package com.programmers.kdt.order.event;
 
 import com.programmers.kdt.order.service.OrderService;
-import com.programmers.kdt.payment.client.pay.PaymentConfirmEvent;
-import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
+import com.programmers.kdt.common.contract.PaymentConfirmEvent;
+import com.programmers.kdt.common.contract.PaymentFailEvent;
 import com.programmers.kdt.payment.client.pay.SpringPaymentResultEventPublisher;
+import com.programmers.kdt.common.contract.CompensationCompletedEvent;
+import com.programmers.kdt.common.contract.RefundCompletedEvent;
+import com.programmers.kdt.common.contract.RefundFailedEvent;
+import com.programmers.kdt.payment.client.refund.SpringRefundEventPublisher;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -60,6 +64,16 @@ class PaymentResultEventListenerFallbackExecutionTest {
         @Bean
         PaymentFailEventListener paymentFailEventListener(OrderService orderService) {
             return new PaymentFailEventListener(orderService);
+        }
+
+        @Bean
+        RefundResultOrderListener refundResultOrderListener(OrderService orderService) {
+            return new RefundResultOrderListener(orderService);
+        }
+
+        @Bean
+        SpringRefundEventPublisher refundEventPublisher(ApplicationEventPublisher publisher) {
+            return new SpringRefundEventPublisher(publisher);
         }
 
         @Bean
@@ -130,5 +144,38 @@ class PaymentResultEventListenerFallbackExecutionTest {
         publisher.publishFailed(new PaymentFailEvent(4L, 4L, "타임아웃"));
 
         verify(orderService).handlePaymentFailed(4L);
+    }
+
+    @Test
+    @DisplayName("RefundCompletedEvent도 활성 트랜잭션 없이 발행되면(outbox relay) 주문 취소 확정 리스너가 실행된다.")
+    void publishRefundCompletedWithoutActiveTransaction_stillInvokesListener() {
+        SpringRefundEventPublisher publisher = context.getBean(SpringRefundEventPublisher.class);
+        OrderService orderService = context.getBean(OrderService.class);
+
+        publisher.publishCompleted(new RefundCompletedEvent(5L, 50L));
+
+        verify(orderService).confirmCancellation(5L);
+    }
+
+    @Test
+    @DisplayName("RefundFailedEvent도 활성 트랜잭션 없이 발행되면(outbox relay) 주문 취소 접수 복구 리스너가 실행된다.")
+    void publishRefundFailedWithoutActiveTransaction_stillInvokesListener() {
+        SpringRefundEventPublisher publisher = context.getBean(SpringRefundEventPublisher.class);
+        OrderService orderService = context.getBean(OrderService.class);
+
+        publisher.publishFailed(new RefundFailedEvent(6L, 60L, "PG_REQUEST_FAILED"));
+
+        verify(orderService).revertCancellation(6L);
+    }
+
+    @Test
+    @DisplayName("CompensationCompletedEvent도 활성 트랜잭션 없이 발행되면(outbox relay) 보상 완료 리스너가 실행된다.")
+    void publishCompensationCompletedWithoutActiveTransaction_stillInvokesListener() {
+        SpringRefundEventPublisher publisher = context.getBean(SpringRefundEventPublisher.class);
+        OrderService orderService = context.getBean(OrderService.class);
+
+        publisher.publishCompensationCompleted(new CompensationCompletedEvent(7L, 70L));
+
+        verify(orderService).failOrderAfterCompensation(7L);
     }
 }

@@ -5,7 +5,7 @@ import com.programmers.kdt.payment.client.point.EndedPerformanceClient;
 import com.programmers.kdt.payment.client.point.EndedTicket;
 import com.programmers.kdt.payment.dto.PointEarnTarget;
 import com.programmers.kdt.payment.exception.PointErrorCode;
-import com.programmers.kdt.payment.repository.PointEarnTargetRepository;
+import com.programmers.kdt.payment.client.order.PointEarnTargetClient;
 import com.programmers.kdt.payment.service.PointService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,7 +25,7 @@ public class PointEarnScheduler {
     private static final int LOOKBACK_DAYS = 3; // 배치 실패 대비 재조회 범위
 
     private final EndedPerformanceClient endedPerformanceClient;
-    private final PointEarnTargetRepository pointEarnTargetRepository;
+    private final PointEarnTargetClient pointEarnTargetClient;
     private final PointService pointService;
 
     @Scheduled(cron = "0 01 0 * * *")
@@ -47,7 +47,7 @@ public class PointEarnScheduler {
             }
 
             List<Long> ticketIds = endedTickets.stream().map(EndedTicket::ticketId).toList();
-            List<PointEarnTarget> targets = pointEarnTargetRepository.findEarnTargetsByTicketIds(ticketIds);
+            List<PointEarnTarget> targets = pointEarnTargetClient.findEarnTargets(ticketIds);
 
             int successCount = 0;
             for (PointEarnTarget target : targets) {

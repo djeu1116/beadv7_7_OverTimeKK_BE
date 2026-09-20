@@ -1,4 +1,4 @@
-package com.programmers.kdt.payment.client.refund;
+package com.programmers.kdt.common.contract;
 
 public record RefundFailedEvent(
         Long orderId,

@@ -1,7 +1,7 @@
 package com.programmers.kdt.payment.scheduler;
 
-import com.programmers.kdt.payment.client.pay.PaymentConfirmEvent;
-import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
+import com.programmers.kdt.common.contract.PaymentConfirmEvent;
+import com.programmers.kdt.common.contract.PaymentFailEvent;
 import com.programmers.kdt.payment.client.pg.MockPgClient;
 import com.programmers.kdt.payment.client.pg.PgApproveResult;
 import com.programmers.kdt.payment.entity.Payment;

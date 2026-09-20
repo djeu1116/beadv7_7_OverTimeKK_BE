@@ -1,8 +1,9 @@
 package com.programmers.kdt.payment.scheduler;
 
-import com.programmers.kdt.payment.client.pay.PaymentConfirmEvent;
-import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
+import com.programmers.kdt.common.contract.PaymentConfirmEvent;
+import com.programmers.kdt.common.contract.PaymentFailEvent;
 import com.programmers.kdt.payment.client.pay.PaymentResultEventPublisher;
+import com.programmers.kdt.common.contract.CompensationCompletedEvent;
 import com.programmers.kdt.payment.client.refund.RefundEventPublisher;
 import com.programmers.kdt.payment.entity.outbox.OutboxEvent;
 import com.programmers.kdt.payment.entity.outbox.OutboxEventStatus;
@@ -129,5 +130,17 @@ class OutboxRelaySchedulerTest {
         boolean anyCompensation = outboxEventRepository.findAll().stream()
                 .anyMatch(e -> e.getEventType() == OutboxEventType.COMPENSATION_REQUESTED);
         assertThat(anyCompensation).isFalse();
+    }
+
+    @Test
+    @DisplayName("COMPENSATION_COMPLETED는 보상 완료 이벤트로 재발행되고 SENT로 바뀐다.")
+    void compensationCompleted_dispatchesAndMarksSent() {
+        save(OutboxEventType.COMPENSATION_COMPLETED, 1L, new CompensationCompletedEvent(10L, 1L));
+
+        relay.relay();
+
+        verify(refundEventPublisher).publishCompensationCompleted(new CompensationCompletedEvent(10L, 1L));
+        OutboxEvent result = outboxEventRepository.findAll().get(0);
+        assertThat(result.getStatus()).isEqualTo(OutboxEventStatus.SENT);
     }
 }

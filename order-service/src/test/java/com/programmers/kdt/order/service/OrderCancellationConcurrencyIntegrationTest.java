@@ -8,10 +8,10 @@ import com.programmers.kdt.order.entity.OrderItem;
 import com.programmers.kdt.order.entity.OrderStatus;
 import com.programmers.kdt.order.repository.OrderItemRepository;
 import com.programmers.kdt.order.repository.OrderRepository;
-import com.programmers.kdt.payment.client.refund.RefundCompletedEvent;
-import com.programmers.kdt.payment.client.refund.RefundFailedEvent;
-import com.programmers.kdt.payment.dto.RefundPaymentRequest;
-import com.programmers.kdt.payment.service.PaymentService;
+import com.programmers.kdt.common.contract.RefundCompletedEvent;
+import com.programmers.kdt.common.contract.RefundFailedEvent;
+import com.programmers.kdt.order.entity.outbox.OrderOutboxEventStatus;
+import com.programmers.kdt.order.repository.OrderOutboxEventRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -70,8 +70,8 @@ class OrderCancellationConcurrencyIntegrationTest {
     @Autowired
     private TransactionTemplate transactionTemplate;
 
-    @MockitoBean
-    private PaymentService paymentService;
+    @Autowired
+    private OrderOutboxEventRepository orderOutboxEventRepository;
 
     @MockitoBean
     private TicketClient ticketClient;
@@ -82,7 +82,8 @@ class OrderCancellationConcurrencyIntegrationTest {
     void setUp() {
         orderItemRepository.deleteAll();
         orderRepository.deleteAll();
-        reset(paymentService, ticketClient);
+        reset(ticketClient);
+        orderOutboxEventRepository.deleteAll();
         executor = Executors.newFixedThreadPool(2);
     }
 
@@ -117,7 +118,9 @@ class OrderCancellationConcurrencyIntegrationTest {
                 .isEqualTo(OrderStatus.CANCEL_REQUESTED.name());
         assertThat(orderRepository.findById(orderId).orElseThrow().getOrderStatus())
                 .isEqualTo(OrderStatus.CANCEL_REQUESTED);
-        verify(paymentService, times(1)).refund(eq(orderId), any(RefundPaymentRequest.class));
+        assertThat(orderOutboxEventRepository.findAll())
+                .singleElement()
+                .satisfies(event -> assertThat(event.getStatus()).isEqualTo(OrderOutboxEventStatus.PENDING));
         verify(ticketClient, never()).cancelTicket(any());
     }
 

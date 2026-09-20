@@ -14,14 +14,14 @@ import com.programmers.kdt.order.dto.ValidateTicketRequest;
 import com.programmers.kdt.order.entity.Order;
 import com.programmers.kdt.order.entity.OrderItem;
 import com.programmers.kdt.order.entity.OrderStatus;
+import com.programmers.kdt.common.contract.OrderCancelRequestedEvent;
 import com.programmers.kdt.order.entity.TicketCancelJob;
+import com.programmers.kdt.order.entity.outbox.OrderOutboxEventType;
 import com.programmers.kdt.order.event.TicketCancelRequestEvent;
 import com.programmers.kdt.order.event.TicketReleaseRequestEvent;
 import com.programmers.kdt.order.exception.OrderErrorCode;
 import com.programmers.kdt.order.repository.OrderRepository;
 import com.programmers.kdt.order.repository.TicketCancelJobRepository;
-import com.programmers.kdt.payment.dto.RefundPaymentRequest;
-import com.programmers.kdt.payment.service.PaymentService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
@@ -40,8 +40,8 @@ public class OrderServiceImpl implements OrderService {
     private final OrderRepository orderRepository;
     private final TicketCancelJobRepository ticketCancelJobRepository;
     private final TicketClient ticketClient;
-    private final PaymentService paymentService;
     private final ApplicationEventPublisher eventPublisher;
+    private final OrderOutboxEventWriter orderOutboxEventWriter;
 
     // 주문 요청
     @Override
@@ -129,13 +129,12 @@ public class OrderServiceImpl implements OrderService {
         // 취소 가능한 주문인지 검증
         order.validateCancel();
 
-        // 결제 취소
-        paymentService.refund(
-                order.getOrderId(),
-                new RefundPaymentRequest(request.reason()));
-
         // 환불 결과가 나오기 전까지는 취소 접수 상태와 티켓 예약을 유지
         order.requestCancel();
+
+        // 결제 취소는 동기 호출이 아니라 outbox로 넘긴다 - 접수 커밋과 같은 트랜잭션이라 유실되지 않음
+        orderOutboxEventWriter.enqueue(OrderOutboxEventType.ORDER_CANCEL_REQUESTED, order.getOrderId(),
+                new OrderCancelRequestedEvent(order.getOrderId(), request.reason()));
 
         return CancelOrderResponse.from(order);
     }
@@ -226,6 +225,15 @@ public class OrderServiceImpl implements OrderService {
         eventPublisher.publishEvent(
                 new TicketCancelRequestEvent(order.getTicketId(), order.getUserId(), order.getOrderId())
         );
+    }
+
+    @Override
+    @Transactional
+    public void failOrderAfterCompensation(Long orderId) {
+        Order order = findOrderForUpdate(orderId);
+        if (order.failAfterPayment()) {
+            publishTicketReleaseEvent(order);
+        }
     }
 
     @Override

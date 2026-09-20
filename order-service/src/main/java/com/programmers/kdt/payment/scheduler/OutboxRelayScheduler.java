@@ -1,12 +1,13 @@
 package com.programmers.kdt.payment.scheduler;
 
-import com.programmers.kdt.payment.client.pay.PaymentConfirmEvent;
-import com.programmers.kdt.payment.client.pay.PaymentFailEvent;
+import com.programmers.kdt.common.contract.PaymentConfirmEvent;
+import com.programmers.kdt.common.contract.PaymentFailEvent;
 import com.programmers.kdt.payment.client.pay.PaymentResultEventPublisher;
+import com.programmers.kdt.common.contract.CompensationCompletedEvent;
 import com.programmers.kdt.payment.client.refund.CompensationRequestEvent;
-import com.programmers.kdt.payment.client.refund.RefundCompletedEvent;
+import com.programmers.kdt.common.contract.RefundCompletedEvent;
 import com.programmers.kdt.payment.client.refund.RefundEventPublisher;
-import com.programmers.kdt.payment.client.refund.RefundFailedEvent;
+import com.programmers.kdt.common.contract.RefundFailedEvent;
 import com.programmers.kdt.payment.client.refund.RefundRequestEvent;
 import com.programmers.kdt.payment.entity.outbox.OutboxEvent;
 import com.programmers.kdt.payment.entity.outbox.OutboxEventStatus;
@@ -86,6 +87,7 @@ public class OutboxRelayScheduler {
             case REFUND_COMPLETED -> refundEventPublisher.publishCompleted(deserialize(event, RefundCompletedEvent.class));
             case REFUND_FAILED -> refundEventPublisher.publishFailed(deserialize(event, RefundFailedEvent.class));
             case COMPENSATION_REQUESTED -> refundEventPublisher.publishCompensationRequested(deserialize(event, CompensationRequestEvent.class));
+            case COMPENSATION_COMPLETED -> refundEventPublisher.publishCompensationCompleted(deserialize(event, CompensationCompletedEvent.class));
         }
     }
 

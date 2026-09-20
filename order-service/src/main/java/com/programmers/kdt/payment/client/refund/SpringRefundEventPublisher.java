@@ -1,5 +1,8 @@
 package com.programmers.kdt.payment.client.refund;
 
+import com.programmers.kdt.common.contract.RefundCompletedEvent;
+import com.programmers.kdt.common.contract.RefundFailedEvent;
+import com.programmers.kdt.common.contract.CompensationCompletedEvent;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
@@ -27,6 +30,11 @@ public class SpringRefundEventPublisher implements RefundEventPublisher {
 
     @Override
     public void publishCompensationRequested(CompensationRequestEvent event) {
+        eventPublisher.publishEvent(event);
+    }
+
+    @Override
+    public void publishCompensationCompleted(CompensationCompletedEvent event) {
         eventPublisher.publishEvent(event);
     }
 }

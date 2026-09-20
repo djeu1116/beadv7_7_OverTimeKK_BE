@@ -195,6 +195,20 @@ public class Order extends BaseTimeEntity {
         this.orderStatus = OrderStatus.COMPLETED;
     }
 
+    // 결제는 확정됐지만 후속 단계(티켓 예약)가 영구 실패해 시스템이 환불(보상)까지 끝낸 뒤 주문 종료 PAYMENT_STARTED -> CANCELLED
+    // 고객 환불(COMPLETED -> CANCEL_REQUESTED -> CANCELLED)과 달리 주문이 완료된 적이 없어서 별도 전이로 둠
+    public boolean failAfterPayment() {
+        if (orderStatus == OrderStatus.CANCELLED) {
+            return false;
+        }
+        if (orderStatus != OrderStatus.PAYMENT_STARTED) {
+            throw new BusinessException(OrderErrorCode.ORDER_NOT_PAYMENT_STARTED);
+        }
+        this.orderStatus = OrderStatus.CANCELLED;
+        this.cancelledAt = LocalDateTime.now();
+        return true;
+    }
+
     private void validateCancelRequested() {
         if (orderStatus != OrderStatus.CANCEL_REQUESTED) {
             throw new BusinessException(OrderErrorCode.ORDER_CANCEL_NOT_REQUESTED);

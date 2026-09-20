@@ -1,7 +1,7 @@
 package com.programmers.kdt.order.event;
 
 import com.programmers.kdt.order.service.OrderService;
-import com.programmers.kdt.payment.client.pay.PaymentConfirmEvent;
+import com.programmers.kdt.common.contract.PaymentConfirmEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
