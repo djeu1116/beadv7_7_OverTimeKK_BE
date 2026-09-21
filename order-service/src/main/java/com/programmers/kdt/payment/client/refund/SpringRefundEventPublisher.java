@@ -5,8 +5,10 @@ import com.programmers.kdt.common.contract.RefundFailedEvent;
 import com.programmers.kdt.common.contract.CompensationCompletedEvent;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
+@Profile("!order-api")
 @Component
 @RequiredArgsConstructor
 // SpringEvent를 이용한 이벤트 발행(추후에 메세지 큐로 변경해야함)

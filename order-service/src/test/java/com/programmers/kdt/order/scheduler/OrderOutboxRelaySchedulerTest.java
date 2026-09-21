@@ -10,7 +10,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
-import org.springframework.context.ApplicationEventPublisher;
+import com.programmers.kdt.order.client.OrderEventPublisher;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.LocalDateTime;
@@ -26,14 +26,14 @@ class OrderOutboxRelaySchedulerTest {
     @Autowired
     private OrderOutboxEventRepository orderOutboxEventRepository;
 
-    private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
+    private final OrderEventPublisher orderEventPublisher = mock(OrderEventPublisher.class);
     private final JsonMapper objectMapper = JsonMapper.builder().build();
 
     private OrderOutboxRelayScheduler relay;
 
     @BeforeEach
     void setUp() {
-        relay = new OrderOutboxRelayScheduler(orderOutboxEventRepository, eventPublisher, objectMapper);
+        relay = new OrderOutboxRelayScheduler(orderOutboxEventRepository, orderEventPublisher, objectMapper);
     }
 
     private OrderOutboxEvent save(Object payload) {
@@ -49,7 +49,7 @@ class OrderOutboxRelaySchedulerTest {
 
         relay.relay();
 
-        verify(eventPublisher).publishEvent(new OrderCancelRequestedEvent(1L, "단순 변심"));
+        verify(orderEventPublisher).publishCancelRequested(new OrderCancelRequestedEvent(1L, "단순 변심"));
         assertThat(orderOutboxEventRepository.findAll().get(0).getStatus()).isEqualTo(OrderOutboxEventStatus.SENT);
     }
 
@@ -57,7 +57,7 @@ class OrderOutboxRelaySchedulerTest {
     @DisplayName("소비자가 예외를 던지면 attempts가 늘고 다음 시도 시각이 뒤로 밀린다.")
     void dispatchThrows_schedulesRetry() {
         OrderOutboxEvent event = save(new OrderCancelRequestedEvent(1L, "단순 변심"));
-        doThrow(new RuntimeException("환불 접수 실패")).when(eventPublisher).publishEvent(any(Object.class));
+        doThrow(new RuntimeException("환불 접수 실패")).when(orderEventPublisher).publishCancelRequested(any());
 
         relay.relay();
 
@@ -76,7 +76,7 @@ class OrderOutboxRelaySchedulerTest {
             event.scheduleRetry(LocalDateTime.now().minusSeconds(1), "이전 실패 " + i);
         }
         orderOutboxEventRepository.save(event);
-        doThrow(new RuntimeException("계속 실패")).when(eventPublisher).publishEvent(any(Object.class));
+        doThrow(new RuntimeException("계속 실패")).when(orderEventPublisher).publishCancelRequested(any());
 
         relay.relay();
 
@@ -93,6 +93,23 @@ class OrderOutboxRelaySchedulerTest {
 
         relay.relay();
 
-        verifyNoInteractions(eventPublisher);
+        verifyNoInteractions(orderEventPublisher);
+    }
+
+    @Test
+    @DisplayName("오류 메시지가 컬럼 길이를 넘어도 잘라서 저장하고 재시도 기록이 실패하지 않는다 - HTTP 오류 응답 본문이 길 수 있음.")
+    void longErrorMessage_isTruncatedAndRetryStillRecorded() {
+        OrderOutboxEvent event = save(new OrderCancelRequestedEvent(1L, "단순 변심"));
+        doThrow(new RuntimeException("x".repeat(2000))).when(orderOutboxEventPublisherMock()).publishCancelRequested(any());
+
+        relay.relay();
+
+        OrderOutboxEvent result = orderOutboxEventRepository.findById(event.getId()).orElseThrow();
+        assertThat(result.getAttempts()).isEqualTo(1);
+        assertThat(result.getLastError()).hasSizeLessThanOrEqualTo(500);
+    }
+
+    private OrderEventPublisher orderOutboxEventPublisherMock() {
+        return orderEventPublisher;
     }
 }

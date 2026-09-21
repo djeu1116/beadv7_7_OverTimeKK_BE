@@ -1,13 +1,13 @@
 package com.programmers.kdt.order.scheduler;
 
 import com.programmers.kdt.common.contract.OrderCancelRequestedEvent;
+import com.programmers.kdt.order.client.OrderEventPublisher;
 import com.programmers.kdt.order.entity.outbox.OrderOutboxEvent;
 import com.programmers.kdt.order.entity.outbox.OrderOutboxEventStatus;
 import com.programmers.kdt.order.repository.OrderOutboxEventRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -30,7 +30,7 @@ public class OrderOutboxRelayScheduler {
     private static final Duration RETRY_BACKOFF = Duration.ofSeconds(30);
 
     private final OrderOutboxEventRepository orderOutboxEventRepository;
-    private final ApplicationEventPublisher eventPublisher;
+    private final OrderEventPublisher orderEventPublisher;
     private final ObjectMapper objectMapper;
 
     @Scheduled(fixedDelay = 10000)
@@ -72,7 +72,7 @@ public class OrderOutboxRelayScheduler {
     private void dispatch(OrderOutboxEvent event) {
         switch (event.getEventType()) {
             case ORDER_CANCEL_REQUESTED ->
-                    eventPublisher.publishEvent(objectMapper.readValue(event.getPayload(), OrderCancelRequestedEvent.class));
+                    orderEventPublisher.publishCancelRequested(objectMapper.readValue(event.getPayload(), OrderCancelRequestedEvent.class));
         }
     }
 }

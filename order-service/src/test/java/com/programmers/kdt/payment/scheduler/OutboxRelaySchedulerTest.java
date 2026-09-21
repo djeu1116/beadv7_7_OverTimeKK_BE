@@ -143,4 +143,17 @@ class OutboxRelaySchedulerTest {
         OutboxEvent result = outboxEventRepository.findAll().get(0);
         assertThat(result.getStatus()).isEqualTo(OutboxEventStatus.SENT);
     }
+
+    @Test
+    @DisplayName("오류 메시지가 컬럼 길이를 넘어도 잘라서 저장하고 재시도 기록이 실패하지 않는다.")
+    void longErrorMessage_isTruncatedAndRetryStillRecorded() {
+        OutboxEvent event = save(OutboxEventType.PAYMENT_CONFIRMED, 1L, new PaymentConfirmEvent(10L, 1L));
+        doThrow(new RuntimeException("x".repeat(2000))).when(paymentResultEventPublisher).publishConfirmed(any());
+
+        relay.relay();
+
+        OutboxEvent result = outboxEventRepository.findById(event.getId()).orElseThrow();
+        assertThat(result.getAttempts()).isEqualTo(1);
+        assertThat(result.getLastError()).hasSizeLessThanOrEqualTo(500);
+    }
 }
