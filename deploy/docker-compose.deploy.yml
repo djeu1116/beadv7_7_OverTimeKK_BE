@@ -129,23 +129,24 @@ services:
   order-service:
     image: ghcr.io/${GHCR_OWNER}/order-service:${IMAGE_TAG:-latest}
     container_name: order-service
-    mem_limit: 640m
+    mem_limit: 512m
     depends_on:
       db:
         condition: service_healthy
     environment:
       TZ: Asia/Seoul
-      # toss/performance-api 프로필이 없으면 @Profile("!toss")/@Profile("!performance-api")인
-      # Mock 빈이 이겨서, 운영에서도 조용히 가짜 PG/가짜 공연 조회로 동작하게 된다.
-      SPRING_PROFILES_ACTIVE: toss,performance-api
+      # 결제를 항상 원격(payment-service)으로 부르도록 고정 - order-service는 더 이상 PG/공연 클라이언트를
+      # 직접 갖지 않으므로 toss/performance-api 프로필은 필요 없다.
+      SPRING_PROFILES_ACTIVE: payment-api
       SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/reseat?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_0900_ai_ci&serverTimezone=Asia/Seoul&useSSL=false
       SPRING_DATASOURCE_USERNAME: root
       SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
       ORDER_SERVICE_URL: http://order-service:8082
+      PAYMENT_SERVICE_URL: http://payment-service:8084
       PERFORMANCE_SERVICE_URL: http://performance-service:8083
-      ENCRYPTION_SECRET_KEY: ${ENCRYPTION_SECRET_KEY}
-      TOSS_SECRET_KEY: ${TOSS_SECRET_KEY}
-      TOSS_CLIENT_KEY: ${TOSS_CLIENT_KEY}
+      INTERNAL_AUTH_TOKEN: ${INTERNAL_AUTH_TOKEN}
       SPRING_JPA_SHOW_SQL: "false"
       SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: "false"
       JWT_SECRET: ${JWT_SECRET}
@@ -158,6 +159,47 @@ services:
     networks:
       - reseat-net
     # 8082는 nginx 프록시용이 아니라 모니터링(EC2#2)의 Prometheus scrape용으로 노출 - SG에서 EC2#2만 허용
+
+  payment-service:
+    image: ghcr.io/${GHCR_OWNER}/payment-service:${IMAGE_TAG:-latest}
+    container_name: payment-service
+    mem_limit: 640m
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      order-service:
+        condition: service_started
+    environment:
+      TZ: Asia/Seoul
+      # toss/performance-api 프로필이 없으면 @Profile("!toss")/@Profile("!performance-api")인
+      # Mock 빈이 이겨서, 운영에서도 조용히 가짜 PG/가짜 공연 조회로 동작하게 된다.
+      # order-api는 order-service를 항상 원격으로 부르도록 고정한다.
+      SPRING_PROFILES_ACTIVE: toss,performance-api,order-api
+      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/reseat?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_0900_ai_ci&serverTimezone=Asia/Seoul&useSSL=false
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      ORDER_SERVICE_URL: http://order-service:8082
+      PERFORMANCE_SERVICE_URL: http://performance-service:8083
+      INTERNAL_AUTH_TOKEN: ${INTERNAL_AUTH_TOKEN}
+      ENCRYPTION_SECRET_KEY: ${ENCRYPTION_SECRET_KEY}
+      TOSS_SECRET_KEY: ${TOSS_SECRET_KEY}
+      TOSS_CLIENT_KEY: ${TOSS_CLIENT_KEY}
+      SPRING_JPA_SHOW_SQL: "false"
+      SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: "false"
+      JWT_SECRET: ${JWT_SECRET}
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://${MONITORING_PRIVATE_IP}:4318/v1/traces
+    volumes:
+      - ./logs:/app/logs
+    ports:
+      - "8084:8084"
+    restart: unless-stopped
+    networks:
+      - reseat-net
+    # 8084는 nginx 프록시용이 아니라 모니터링(EC2#2)의 Prometheus scrape용으로 노출 - SG에서 EC2#2만 허용
 
   performance-service:
     image: ghcr.io/${GHCR_OWNER}/performance-service:${IMAGE_TAG:-latest}
@@ -201,11 +243,13 @@ services:
     depends_on:
       - user-service
       - order-service
+      - payment-service
       - performance-service
     environment:
       TZ: Asia/Seoul
       USER_SERVICE_URL: http://user-service:8081
       ORDER_SERVICE_URL: http://order-service:8082
+      PAYMENT_SERVICE_URL: http://payment-service:8084
       PERFORMANCE_SERVICE_URL: http://performance-service:8083
       JWT_SECRET: ${JWT_SECRET}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}

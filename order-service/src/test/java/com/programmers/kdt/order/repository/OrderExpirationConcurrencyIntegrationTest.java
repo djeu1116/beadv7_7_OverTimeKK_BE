@@ -4,7 +4,6 @@ import com.programmers.kdt.order.client.TicketClient;
 import com.programmers.kdt.order.entity.Order;
 import com.programmers.kdt.order.entity.OrderItem;
 import com.programmers.kdt.order.entity.OrderStatus;
-import com.programmers.kdt.payment.service.PaymentService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -54,9 +53,6 @@ class OrderExpirationConcurrencyIntegrationTest {
 
     @Autowired
     private TransactionTemplate transactionTemplate;
-
-    @MockitoBean
-    private PaymentService paymentService;
 
     @MockitoBean
     private TicketClient ticketClient;

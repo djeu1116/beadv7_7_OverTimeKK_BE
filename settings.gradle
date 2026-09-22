@@ -1,2 +1,2 @@
 rootProject.name = 'kdt'
-include 'common', 'user-service', 'order-service', 'performance-service', 'gateway-service'
+include 'common', 'user-service', 'order-service', 'payment-service', 'performance-service', 'gateway-service'

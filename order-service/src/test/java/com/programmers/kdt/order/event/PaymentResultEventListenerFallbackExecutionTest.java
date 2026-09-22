@@ -1,13 +1,11 @@
 package com.programmers.kdt.order.event;
 
-import com.programmers.kdt.order.service.OrderService;
+import com.programmers.kdt.common.contract.CompensationCompletedEvent;
 import com.programmers.kdt.common.contract.PaymentConfirmEvent;
 import com.programmers.kdt.common.contract.PaymentFailEvent;
-import com.programmers.kdt.payment.client.pay.SpringPaymentResultEventPublisher;
-import com.programmers.kdt.common.contract.CompensationCompletedEvent;
 import com.programmers.kdt.common.contract.RefundCompletedEvent;
 import com.programmers.kdt.common.contract.RefundFailedEvent;
-import com.programmers.kdt.payment.client.refund.SpringRefundEventPublisher;
+import com.programmers.kdt.order.service.OrderService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -28,6 +26,12 @@ import javax.sql.DataSource;
 
 import static org.mockito.Mockito.*;
 
+// 주문 내부 컨트롤러(OrderEventInternalController)는 결제가 보낸 이벤트를 트랜잭션 없이
+// publishEvent()만으로 발행한다(HTTP 요청 처리 중이라 애초에 활성 트랜잭션이 없음). 이 상황에서도
+// 주문 쪽 리스너들이 fallbackExecution=true 덕분에 실행되는지 확인한다. 물리 분리 전에는 이 시나리오를
+// 결제 쪽 publisher까지 같이 넣어 재현했지만(SpringPaymentResultEventPublisher 등), 분리 후에는
+// order-service가 결제 코드를 참조할 수 없으므로 order-service 자신의 ApplicationEventPublisher로
+// 직접 발행해 같은 시나리오를 재현한다 - 실제 내부 컨트롤러가 하는 일과 동일하다.
 class PaymentResultEventListenerFallbackExecutionTest {
 
     // 재조회 스케줄러처럼 "활성 트랜잭션이 없는" 상황을 재현하기 위한 최소 스프링 컨텍스트.
@@ -70,23 +74,17 @@ class PaymentResultEventListenerFallbackExecutionTest {
         RefundResultOrderListener refundResultOrderListener(OrderService orderService) {
             return new RefundResultOrderListener(orderService);
         }
-
-        @Bean
-        SpringRefundEventPublisher refundEventPublisher(ApplicationEventPublisher publisher) {
-            return new SpringRefundEventPublisher(publisher);
-        }
-
-        @Bean
-        SpringPaymentResultEventPublisher paymentResultEventPublisher(ApplicationEventPublisher publisher) {
-            return new SpringPaymentResultEventPublisher(publisher);
-        }
     }
 
     private AnnotationConfigApplicationContext context;
+    private ApplicationEventPublisher eventPublisher;
+    private OrderService orderService;
 
     @BeforeEach
     void setUp() {
         context = new AnnotationConfigApplicationContext(TestConfig.class);
+        eventPublisher = context;
+        orderService = context.getBean(OrderService.class);
     }
 
     @AfterEach
@@ -97,10 +95,7 @@ class PaymentResultEventListenerFallbackExecutionTest {
     @Test
     @DisplayName("재조회 스케줄러처럼 활성 트랜잭션 없이 이벤트를 발행해도 fallbackExecution 덕분에 리스너가 실행된다.")
     void publishConfirmedWithoutActiveTransaction_stillInvokesListener() {
-        SpringPaymentResultEventPublisher publisher = context.getBean(SpringPaymentResultEventPublisher.class);
-        OrderService orderService = context.getBean(OrderService.class);
-
-        publisher.publishConfirmed(new PaymentConfirmEvent(1L, 1L));
+        eventPublisher.publishEvent(new PaymentConfirmEvent(1L, 1L));
 
         verify(orderService).completeOrder(1L);
     }
@@ -108,12 +103,10 @@ class PaymentResultEventListenerFallbackExecutionTest {
     @Test
     @DisplayName("트랜잭션 안에서 발행하면 커밋 전에는 리스너가 실행되지 않고, 커밋 후에만 실행된다.")
     void publishConfirmedInsideTransaction_invokesListenerOnlyAfterCommit() {
-        SpringPaymentResultEventPublisher publisher = context.getBean(SpringPaymentResultEventPublisher.class);
-        OrderService orderService = context.getBean(OrderService.class);
         TransactionTemplate txTemplate = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
 
         txTemplate.executeWithoutResult(status -> {
-            publisher.publishConfirmed(new PaymentConfirmEvent(2L, 2L));
+            eventPublisher.publishEvent(new PaymentConfirmEvent(2L, 2L));
             verifyNoInteractions(orderService);
         });
 
@@ -123,12 +116,10 @@ class PaymentResultEventListenerFallbackExecutionTest {
     @Test
     @DisplayName("트랜잭션이 롤백되면 AFTER_COMMIT 리스너는 끝까지 실행되지 않는다.")
     void publishConfirmedThenRollback_neverInvokesListener() {
-        SpringPaymentResultEventPublisher publisher = context.getBean(SpringPaymentResultEventPublisher.class);
-        OrderService orderService = context.getBean(OrderService.class);
         TransactionTemplate txTemplate = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
 
         txTemplate.executeWithoutResult(status -> {
-            publisher.publishConfirmed(new PaymentConfirmEvent(3L, 3L));
+            eventPublisher.publishEvent(new PaymentConfirmEvent(3L, 3L));
             status.setRollbackOnly();
         });
 
@@ -138,10 +129,7 @@ class PaymentResultEventListenerFallbackExecutionTest {
     @Test
     @DisplayName("PaymentFailEvent도 활성 트랜잭션 없이 발행되면 fallbackExecution으로 실행된다.")
     void publishFailedWithoutActiveTransaction_stillInvokesListener() {
-        SpringPaymentResultEventPublisher publisher = context.getBean(SpringPaymentResultEventPublisher.class);
-        OrderService orderService = context.getBean(OrderService.class);
-
-        publisher.publishFailed(new PaymentFailEvent(4L, 4L, "타임아웃"));
+        eventPublisher.publishEvent(new PaymentFailEvent(4L, 4L, "타임아웃"));
 
         verify(orderService).handlePaymentFailed(4L);
     }
@@ -149,10 +137,7 @@ class PaymentResultEventListenerFallbackExecutionTest {
     @Test
     @DisplayName("RefundCompletedEvent도 활성 트랜잭션 없이 발행되면(outbox relay) 주문 취소 확정 리스너가 실행된다.")
     void publishRefundCompletedWithoutActiveTransaction_stillInvokesListener() {
-        SpringRefundEventPublisher publisher = context.getBean(SpringRefundEventPublisher.class);
-        OrderService orderService = context.getBean(OrderService.class);
-
-        publisher.publishCompleted(new RefundCompletedEvent(5L, 50L));
+        eventPublisher.publishEvent(new RefundCompletedEvent(5L, 50L));
 
         verify(orderService).confirmCancellation(5L);
     }
@@ -160,10 +145,7 @@ class PaymentResultEventListenerFallbackExecutionTest {
     @Test
     @DisplayName("RefundFailedEvent도 활성 트랜잭션 없이 발행되면(outbox relay) 주문 취소 접수 복구 리스너가 실행된다.")
     void publishRefundFailedWithoutActiveTransaction_stillInvokesListener() {
-        SpringRefundEventPublisher publisher = context.getBean(SpringRefundEventPublisher.class);
-        OrderService orderService = context.getBean(OrderService.class);
-
-        publisher.publishFailed(new RefundFailedEvent(6L, 60L, "PG_REQUEST_FAILED"));
+        eventPublisher.publishEvent(new RefundFailedEvent(6L, 60L, "PG_REQUEST_FAILED"));
 
         verify(orderService).revertCancellation(6L);
     }
@@ -171,10 +153,7 @@ class PaymentResultEventListenerFallbackExecutionTest {
     @Test
     @DisplayName("CompensationCompletedEvent도 활성 트랜잭션 없이 발행되면(outbox relay) 보상 완료 리스너가 실행된다.")
     void publishCompensationCompletedWithoutActiveTransaction_stillInvokesListener() {
-        SpringRefundEventPublisher publisher = context.getBean(SpringRefundEventPublisher.class);
-        OrderService orderService = context.getBean(OrderService.class);
-
-        publisher.publishCompensationCompleted(new CompensationCompletedEvent(7L, 70L));
+        eventPublisher.publishEvent(new CompensationCompletedEvent(7L, 70L));
 
         verify(orderService).failOrderAfterCompensation(7L);
     }

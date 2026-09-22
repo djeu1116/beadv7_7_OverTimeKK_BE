@@ -16,6 +16,8 @@ jobs:
         include:
           - service: order-service
             port: 8082
+          - service: payment-service
+            port: 8084
           - service: performance-service
             port: 8083
           - service: user-service
@@ -97,6 +99,7 @@ jobs:
           FRONTEND_IMAGE=ghcr.io/prgrms-be-adv-devcourse/beadv7_7_overtimekk_fe/frontend:latest
           MYSQL_ROOT_PASSWORD=${{ secrets.MYSQL_ROOT_PASSWORD }}
           ENCRYPTION_SECRET_KEY=${{ secrets.ENCRYPTION_SECRET_KEY }}
+          INTERNAL_AUTH_TOKEN=${{ secrets.INTERNAL_AUTH_TOKEN }}
           TOSS_SECRET_KEY=${{ secrets.TOSS_SECRET_KEY }}
           TOSS_CLIENT_KEY=${{ secrets.TOSS_CLIENT_KEY }}
           JWT_SECRET=${{ secrets.JWT_SECRET }}

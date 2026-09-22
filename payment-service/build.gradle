@@ -1,0 +1,15 @@
+dependencies {
+    implementation project(':common')
+
+    // Redis (confirm() 멱등키 저장소)
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'org.apache.commons:commons-pool2'
+
+    // ShedLock (스케줄러 다중 인스턴스 중복 실행 방지)
+    implementation 'net.javacrumbs.shedlock:shedlock-spring:7.10.1'
+    implementation 'net.javacrumbs.shedlock:shedlock-provider-redis-spring:7.10.1'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test:4.1.0'
+    testImplementation 'com.h2database:h2'
+}

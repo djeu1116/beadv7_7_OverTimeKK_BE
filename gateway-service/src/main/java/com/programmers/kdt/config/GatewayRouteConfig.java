@@ -27,6 +27,9 @@ public class GatewayRouteConfig {
     @Value("${order-service.url}")
     private String orderServiceUrl;
 
+    @Value("${payment-service.url}")
+    private String paymentServiceUrl;
+
     @Value("${performance-service.url}")
     private String performanceServiceUrl;
 
@@ -34,8 +37,9 @@ public class GatewayRouteConfig {
     public RouterFunction<ServerResponse> gatewayRoutes(JwtProvider jwtProvider) {
         JwtAuthFilterFunction jwtAuthFilterFunction = new JwtAuthFilterFunction(jwtProvider);
 
-        RequestPredicate orderServicePaths = path("/api/order/**")
-                .or(path("/api/payments/**"))
+        RequestPredicate orderServicePaths = path("/api/order/**");
+
+        RequestPredicate paymentServicePaths = path("/api/payments/**")
                 .or(path("/api/points/**"))
                 .or(path("/api/settlements/**"));
 
@@ -57,6 +61,11 @@ public class GatewayRouteConfig {
             .and(route("order-service")
                 .route(orderServicePaths, http())
                 .before(uri(orderServiceUrl))
+                .filter(jwtAuthFilterFunction)
+                .build())
+            .and(route("payment-service")
+                .route(paymentServicePaths, http())
+                .before(uri(paymentServiceUrl))
                 .filter(jwtAuthFilterFunction)
                 .build())
             .and(route("performance-service")

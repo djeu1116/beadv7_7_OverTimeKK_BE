@@ -1,4 +1,4 @@
-package com.programmers.kdt.config;
+package com.programmers.kdt.common.config;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
