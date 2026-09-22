@@ -10,6 +10,7 @@ import com.programmers.kdt.payment.entity.outbox.OutboxEventType;
 import com.programmers.kdt.payment.repository.PaymentRepository;
 import com.programmers.kdt.payment.service.OutboxEventWriter;
 import com.programmers.kdt.payment.service.PointService;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.payment.service.tx.PaymentTxOps;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,6 +38,7 @@ public class PaymentReconciliationIntegrationTest {
     private final MockPgClient mockPgClient = new MockPgClient();
     private final PointService pointService = mock(PointService.class);
     private final OutboxEventWriter outboxEventWriter = mock(OutboxEventWriter.class);
+    private final ReconciliationTaskWriter reconciliationTaskWriter = mock(ReconciliationTaskWriter.class);
 
     private PaymentReconciliationScheduler scheduler;
 
@@ -45,7 +47,7 @@ public class PaymentReconciliationIntegrationTest {
         mockPgClient.reset();
         PaymentTxOps paymentTxOps = new PaymentTxOps(paymentRepository, pointService, outboxEventWriter);
         scheduler = new PaymentReconciliationScheduler(
-                paymentRepository, mockPgClient, paymentTxOps, pointService);
+                paymentRepository, mockPgClient, paymentTxOps, pointService, reconciliationTaskWriter);
     }
 
     private Payment persistPendingPayment(String paymentKey) {

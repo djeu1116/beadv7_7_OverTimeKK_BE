@@ -120,6 +120,23 @@ CREATE TABLE `payment` (
   UNIQUE KEY `UKmf7n8wo2rwrxsd6f3t9ub2mep` (`order_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `reconciliation_task`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `reconciliation_task` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `task_type` varchar(50) NOT NULL,
+  `aggregate_id` bigint NOT NULL,
+  `amount` bigint DEFAULT NULL,
+  `detail` varchar(500) DEFAULT NULL,
+  `status` enum('OPEN','RESOLVED') NOT NULL DEFAULT 'OPEN',
+  `resolved_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_reconciliation_task_status_type` (`status`,`task_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `order_outbox_event`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;

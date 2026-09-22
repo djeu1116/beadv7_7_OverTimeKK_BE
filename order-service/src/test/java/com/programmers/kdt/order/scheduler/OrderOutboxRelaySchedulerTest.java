@@ -1,6 +1,7 @@
 package com.programmers.kdt.order.scheduler;
 
 import com.programmers.kdt.common.contract.OrderCancelRequestedEvent;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.order.entity.outbox.OrderOutboxEvent;
 import com.programmers.kdt.order.entity.outbox.OrderOutboxEventStatus;
 import com.programmers.kdt.order.entity.outbox.OrderOutboxEventType;
@@ -27,13 +28,14 @@ class OrderOutboxRelaySchedulerTest {
     private OrderOutboxEventRepository orderOutboxEventRepository;
 
     private final OrderEventPublisher orderEventPublisher = mock(OrderEventPublisher.class);
+    private final ReconciliationTaskWriter reconciliationTaskWriter = mock(ReconciliationTaskWriter.class);
     private final JsonMapper objectMapper = JsonMapper.builder().build();
 
     private OrderOutboxRelayScheduler relay;
 
     @BeforeEach
     void setUp() {
-        relay = new OrderOutboxRelayScheduler(orderOutboxEventRepository, orderEventPublisher, objectMapper);
+        relay = new OrderOutboxRelayScheduler(orderOutboxEventRepository, orderEventPublisher, objectMapper, reconciliationTaskWriter);
     }
 
     private OrderOutboxEvent save(Object payload) {

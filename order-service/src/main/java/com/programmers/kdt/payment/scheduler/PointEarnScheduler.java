@@ -6,6 +6,8 @@ import com.programmers.kdt.payment.client.point.EndedTicket;
 import com.programmers.kdt.payment.dto.PointEarnTarget;
 import com.programmers.kdt.payment.exception.PointErrorCode;
 import com.programmers.kdt.payment.client.order.PointEarnTargetClient;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskType;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.payment.service.PointService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -27,6 +29,7 @@ public class PointEarnScheduler {
     private final EndedPerformanceClient endedPerformanceClient;
     private final PointEarnTargetClient pointEarnTargetClient;
     private final PointService pointService;
+    private final ReconciliationTaskWriter reconciliationTaskWriter;
 
     @Scheduled(cron = "0 01 0 * * *")
     public void earnPointsForEndedPerformances() {
@@ -66,7 +69,9 @@ public class PointEarnScheduler {
             log.info("{}~{} 공연 종료 포인트 적립 대상 {}건 중 {}건 처리 완료", from, to, targets.size(), successCount);
         } catch (Exception e) {
             log.error("[POINT_EARN_BATCH_FAILED] {}~{} 포인트 적립 배치 자체가 실패. 자동 재처리 되지 않으니 수동 확인 필요.", from, to, e);
-
+            // 배치 단위 실패라 특정 대상 하나로 좁혀지지 않음 - aggregateId는 관례상 0
+            reconciliationTaskWriter.record(ReconciliationTaskType.POINT_EARN_BATCH_FAILED, 0L,
+                    "period=" + from + "~" + to + ", error=" + e.getMessage());
         }
     }
 
@@ -87,6 +92,8 @@ public class PointEarnScheduler {
                 if (attempt == MAX_RETRY_ATTEMPTS) {
                     log.error("[POINT_EARN_RECONCILIATION_NEEDED] 동시성 충돌로 재시도 소진 - ticketId={}, userId={}, amount={}",
                             target.ticketId(), target.userId(), earnAmount, e);
+                    reconciliationTaskWriter.record(ReconciliationTaskType.POINT_EARN_FAILED, target.ticketId(), earnAmount,
+                            "userId=" + target.userId());
                     return false;
                 }
                 log.warn("포인트 적립 동시성 충돌, 재시도 {}회차 - ticketId={}", attempt, target.ticketId());

@@ -1,5 +1,6 @@
 package com.programmers.kdt.payment.scheduler;
 
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.payment.client.pg.PgApproveResult;
 import com.programmers.kdt.payment.client.pg.PgClient;
 import com.programmers.kdt.payment.client.pg.PgClientException;
@@ -30,6 +31,9 @@ import static org.mockito.Mockito.*;
 class PaymentReconciliationSchedulerTest {
 
     @Mock
+    private ReconciliationTaskWriter reconciliationTaskWriter;
+
+    @Mock
     private PaymentRepository paymentRepository;
     @Mock
     private PgClient pgClient;
@@ -42,7 +46,7 @@ class PaymentReconciliationSchedulerTest {
 
     @BeforeEach
     void setUp() {
-        scheduler = new PaymentReconciliationScheduler(paymentRepository, pgClient, paymentTxOps, pointService);
+        scheduler = new PaymentReconciliationScheduler(paymentRepository, pgClient, paymentTxOps, pointService, reconciliationTaskWriter);
     }
 
     private Payment pendingPayment(Long id, LocalDateTime modifiedAt) {

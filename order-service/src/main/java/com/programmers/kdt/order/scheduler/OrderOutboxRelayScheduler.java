@@ -1,6 +1,8 @@
 package com.programmers.kdt.order.scheduler;
 
 import com.programmers.kdt.common.contract.OrderCancelRequestedEvent;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskType;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.order.client.OrderEventPublisher;
 import com.programmers.kdt.order.entity.outbox.OrderOutboxEvent;
 import com.programmers.kdt.order.entity.outbox.OrderOutboxEventStatus;
@@ -32,6 +34,7 @@ public class OrderOutboxRelayScheduler {
     private final OrderOutboxEventRepository orderOutboxEventRepository;
     private final OrderEventPublisher orderEventPublisher;
     private final ObjectMapper objectMapper;
+    private final ReconciliationTaskWriter reconciliationTaskWriter;
 
     @Scheduled(fixedDelay = 10000)
     @SchedulerLock(name = "orderOutboxRelay", lockAtMostFor = "2m", lockAtLeastFor = "10s")
@@ -61,6 +64,8 @@ public class OrderOutboxRelayScheduler {
                 orderOutboxEventRepository.save(event);
                 log.error("[ORDER_OUTBOX_RECONCILIATION_NEEDED] 재시도 소진 - id={}, type={}, aggregateId={}",
                         event.getId(), event.getEventType(), event.getAggregateId());
+                reconciliationTaskWriter.record(ReconciliationTaskType.ORDER_OUTBOX_DELIVERY_FAILED, event.getAggregateId(),
+                        "eventType=" + event.getEventType() + ", outboxId=" + event.getId() + ", error=" + e.getMessage());
             } else {
                 event.scheduleRetry(LocalDateTime.now().plus(RETRY_BACKOFF), e.getMessage());
                 orderOutboxEventRepository.save(event);

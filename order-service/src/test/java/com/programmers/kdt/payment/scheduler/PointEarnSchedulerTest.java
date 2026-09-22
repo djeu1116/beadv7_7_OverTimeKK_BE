@@ -2,6 +2,7 @@ package com.programmers.kdt.payment.scheduler;
 
 
 import com.programmers.kdt.common.exception.BusinessException;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.payment.client.point.EndedPerformanceClient;
 import com.programmers.kdt.payment.client.point.EndedTicket;
 import com.programmers.kdt.payment.dto.PointEarnTarget;
@@ -27,6 +28,9 @@ import static org.mockito.Mockito.*;
 class PointEarnSchedulerTest {
 
     @Mock
+    private ReconciliationTaskWriter reconciliationTaskWriter;
+
+    @Mock
     private EndedPerformanceClient endedPerformanceClient;
 
     @Mock
@@ -39,7 +43,7 @@ class PointEarnSchedulerTest {
 
     @BeforeEach
     void setUp() {
-        scheduler = new PointEarnScheduler(endedPerformanceClient, pointEarnTargetClient, pointService);
+        scheduler = new PointEarnScheduler(endedPerformanceClient, pointEarnTargetClient, pointService, reconciliationTaskWriter);
     }
 
     @Test

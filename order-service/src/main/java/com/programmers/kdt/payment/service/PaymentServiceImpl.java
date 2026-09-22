@@ -4,6 +4,8 @@ import com.programmers.kdt.common.exception.BusinessException;
 import com.programmers.kdt.common.contract.PaymentFailEvent;
 import com.programmers.kdt.payment.client.pg.*;
 import com.programmers.kdt.common.contract.CompensationCompletedEvent;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskType;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.common.contract.OrderCancelRequestedEvent;
 import com.programmers.kdt.common.contract.RefundCompletedEvent;
 import com.programmers.kdt.common.contract.RefundFailedEvent;
@@ -64,6 +66,7 @@ public class PaymentServiceImpl implements PaymentService{
     private final ObjectMapper objectMapper;
     private final PaymentTxOps paymentTxOps;
     private final OutboxEventWriter outboxEventWriter;
+    private final ReconciliationTaskWriter reconciliationTaskWriter;
 
 
     @Transactional
@@ -139,6 +142,7 @@ public class PaymentServiceImpl implements PaymentService{
             orderClient.cancelPaymentStart(orderId);
         } catch (Exception e) {
             log.error("[PAYMENT_START_RECONCILIATION_NEEDED] 결제 시작 보상 실패 - orderId={}", orderId, e);
+            reconciliationTaskWriter.record(ReconciliationTaskType.PAYMENT_START_COMPENSATION_FAILED, orderId, e.getMessage());
         }
     }
 
@@ -410,6 +414,8 @@ public class PaymentServiceImpl implements PaymentService{
         paymentRepository.save(payment);
         log.error("[COMPENSATION_RECONCILIATION_NEEDED] 보상(PG 취소) 실패 - paymentId={}, orderId={}, reason={}",
                 payment.getId(), payment.getOrderId(), failReason);
+        reconciliationTaskWriter.record(ReconciliationTaskType.COMPENSATION_FAILED, payment.getId(),
+                "orderId=" + payment.getOrderId() + ", reason=" + failReason);
     }
 
     // PG취소 + 환불이력저장 + completeRefund + 포인트롤백 (고객 환불/시스템 보상 공유)
@@ -433,6 +439,8 @@ public class PaymentServiceImpl implements PaymentService{
             } catch (Exception e) {
                 // 환불/보상은 이미 확정, 포인트 환급이 실패되더라도 그대로 완료 처리
                 log.error("[REFUND_POST_PROCESS_FAILED] 환불은 완료됐으나 후처리 실패 - paymentId={}", payment.getId(), e);
+                reconciliationTaskWriter.record(ReconciliationTaskType.REFUND_POINT_ROLLBACK_FAILED, payment.getId(),
+                        usedPoint, "orderId=" + payment.getOrderId() + ", unexpected=" + e.getMessage());
             }
         }
         return true;
@@ -480,12 +488,35 @@ public class PaymentServiceImpl implements PaymentService{
         }
 
 
-        private void rollbackFailedPoint(Payment payment, Long usedPoint) {
-            if (usedPoint > 0) {
-                Long orderId = payment.getOrderId();
-                int attemptSeq = payment.getAttemptSeq();
-                pointService.rollbackPoint(PointEventIds.useEventId(orderId, attemptSeq), usedPoint,
-                        PointEventIds.rollbackFailEventId(orderId, attemptSeq), true);
+    // 재시도(동시성 충돌 대비) - 예전엔 재시도/대사 기록 없이 예외가 그대로 새서 결제 상태는 이미
+    // 커밋됐는데 사용자에게 500이 갈 수 있었음. PaymentReconciliationScheduler의 같은 로직과 동일 패턴.
+    private static final int MAX_POINT_ROLLBACK_ATTEMPTS = 3;
+
+    private void rollbackFailedPoint(Payment payment, Long usedPoint) {
+        if (usedPoint <= 0) {
+            return;
+        }
+        Long orderId = payment.getOrderId();
+        Long paymentId = payment.getId();
+        int attemptSeq = payment.getAttemptSeq();
+        String originEventId = PointEventIds.useEventId(orderId, attemptSeq);
+        String rollbackEventId = PointEventIds.rollbackFailEventId(orderId, attemptSeq);
+
+        for (int attempt = 1; attempt <= MAX_POINT_ROLLBACK_ATTEMPTS; attempt++) {
+            try {
+                pointService.rollbackPoint(originEventId, usedPoint, rollbackEventId, true);
+                return;
+            } catch (BusinessException e) {
+                boolean retryable = e.getErrorCode() == PointErrorCode.POINT_CONCURRENT_MODIFICATION;
+                if (!retryable || attempt == MAX_POINT_ROLLBACK_ATTEMPTS) {
+                    log.error("[POINT_ROLLBACK_RECONCILIATION_NEEDED] 결제는 실패됐지만 포인트 롤백에 실패했습니다. " +
+                                    "paymentId={}, orderId={}, amount={}, errorCode={}",
+                            paymentId, orderId, usedPoint, e.getErrorCode(), e);
+                    reconciliationTaskWriter.record(ReconciliationTaskType.POINT_ROLLBACK_FAILED, paymentId, usedPoint,
+                            "orderId=" + orderId + ", errorCode=" + e.getErrorCode());
+                    return;
+                }
+            }
         }
     }
 
@@ -516,6 +547,8 @@ public class PaymentServiceImpl implements PaymentService{
                     log.error("[POINT_REFUND_RECONCILIATION_NEEDED] 환불은 완료됐지만 포인트 환급에 실패했습니다. " +
                                     "paymentId={}, orderId={}, amount={}, errorCode={}",
                             paymentId, orderId, refundedPoint, e.getErrorCode(), e);
+                    reconciliationTaskWriter.record(ReconciliationTaskType.REFUND_POINT_ROLLBACK_FAILED, paymentId,
+                            refundedPoint, "orderId=" + orderId + ", errorCode=" + e.getErrorCode());
                     return;
                 }
                 log.warn("포인트 환급 동시성 충돌, 재시도 {}회차 - orderId={}", attempt, orderId);

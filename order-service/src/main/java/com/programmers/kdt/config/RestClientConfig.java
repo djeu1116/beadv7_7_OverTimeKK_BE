@@ -1,6 +1,5 @@
 package com.programmers.kdt.config;
 
-import com.programmers.kdt.config.InternalAuthFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

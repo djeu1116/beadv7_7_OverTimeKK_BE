@@ -9,6 +9,8 @@ import com.programmers.kdt.payment.entity.PaymentStatus;
 import com.programmers.kdt.payment.exception.PointErrorCode;
 import com.programmers.kdt.payment.repository.PaymentRepository;
 import com.programmers.kdt.payment.service.PointService;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskType;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.payment.service.tx.PaymentTxOps;
 import com.programmers.kdt.payment.service.tx.PgOutcome;
 import com.programmers.kdt.payment.service.util.PointEventIds;
@@ -38,6 +40,7 @@ public class PaymentReconciliationScheduler {
     private final PgClient pgClient;
     private final PaymentTxOps paymentTxOps;
     private final PointService pointService;
+    private final ReconciliationTaskWriter reconciliationTaskWriter;
 
     @Scheduled(fixedDelay = 60000)
     public void reconcilePayments() {
@@ -89,6 +92,8 @@ public class PaymentReconciliationScheduler {
         }
 
         log.error("[PG_CONFIRM_RECONCILIATION_NEEDED] 재조회 시간 초과로 결제 실패 처리 - paymentId={}, orderId={}, pendingSince={} ", payment.getId(), payment.getOrderId(), payment.getModifiedAt());
+        reconciliationTaskWriter.record(ReconciliationTaskType.PG_CONFIRM_TIMEOUT_FORCE_FAILED, payment.getId(),
+                "orderId=" + payment.getOrderId() + ", pendingSince=" + payment.getModifiedAt());
         Payment resolved = paymentTxOps.applyReconcileResult(payment.getId(), PgOutcome.EXPLICIT_FAIL);
         rollbackFailedPoint(resolved);
         return true;
@@ -120,6 +125,8 @@ public class PaymentReconciliationScheduler {
                     log.error("[POINT_ROLLBACK_RECONCILIATION_NEEDED] 결제는 실패됐지만 포인트 롤백에 실패했습니다. " +
                                     "paymentId={}, orderId={}, amount={}, errorCode={}",
                             paymentId, orderId, usedPoint, e.getErrorCode(), e);
+                    reconciliationTaskWriter.record(ReconciliationTaskType.POINT_ROLLBACK_FAILED, paymentId, usedPoint,
+                            "orderId=" + orderId + ", errorCode=" + e.getErrorCode());
                     return;
                 }
             }

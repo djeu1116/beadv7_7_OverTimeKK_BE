@@ -4,6 +4,7 @@ import com.programmers.kdt.common.contract.PaymentConfirmEvent;
 import com.programmers.kdt.common.contract.PaymentFailEvent;
 import com.programmers.kdt.payment.client.pay.PaymentResultEventPublisher;
 import com.programmers.kdt.common.contract.CompensationCompletedEvent;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.payment.client.refund.RefundEventPublisher;
 import com.programmers.kdt.payment.entity.outbox.OutboxEvent;
 import com.programmers.kdt.payment.entity.outbox.OutboxEventStatus;
@@ -34,13 +35,14 @@ class OutboxRelaySchedulerTest {
     private final PaymentResultEventPublisher paymentResultEventPublisher = mock(PaymentResultEventPublisher.class);
     private final RefundEventPublisher refundEventPublisher = mock(RefundEventPublisher.class);
     private final JsonMapper objectMapper = JsonMapper.builder().build();
+    private final ReconciliationTaskWriter reconciliationTaskWriter = mock(ReconciliationTaskWriter.class);
 
     private OutboxRelayScheduler relay;
 
     @BeforeEach
     void setUp() {
         OutboxEventWriter outboxEventWriter = new OutboxEventWriter(outboxEventRepository, objectMapper);
-        relay = new OutboxRelayScheduler(outboxEventRepository, paymentResultEventPublisher, refundEventPublisher, outboxEventWriter, objectMapper);
+        relay = new OutboxRelayScheduler(outboxEventRepository, paymentResultEventPublisher, refundEventPublisher, outboxEventWriter, objectMapper, reconciliationTaskWriter);
     }
 
     private OutboxEvent save(OutboxEventType type, Long aggregateId, Object payload) {

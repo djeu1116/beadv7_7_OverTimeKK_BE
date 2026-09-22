@@ -17,6 +17,8 @@ import com.programmers.kdt.payment.entity.PaymentRefund;
 import com.programmers.kdt.payment.entity.PaymentStatus;
 import com.programmers.kdt.payment.entity.outbox.OutboxEventType;
 import com.programmers.kdt.payment.exception.PaymentErrorCode;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskType;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.payment.exception.PointErrorCode;
 import com.programmers.kdt.payment.repository.PaymentRefundRepository;
 import com.programmers.kdt.payment.repository.PaymentRepository;
@@ -69,6 +71,8 @@ class PaymentServiceImplTest {
     private PaymentTxOps paymentTxOps;
     @Mock
     private OutboxEventWriter outboxEventWriter;
+    @Mock
+    private ReconciliationTaskWriter reconciliationTaskWriter;
 
     private PaymentService paymentService;
 
@@ -76,7 +80,7 @@ class PaymentServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        paymentService = new PaymentServiceImpl(paymentRepository, paymentRefundRepository, performanceClient, orderClient, pgClient, pointService, idempotencyKeyService, objectMapper, paymentTxOps, outboxEventWriter);
+        paymentService = new PaymentServiceImpl(paymentRepository, paymentRefundRepository, performanceClient, orderClient, pgClient, pointService, idempotencyKeyService, objectMapper, paymentTxOps, outboxEventWriter, reconciliationTaskWriter);
         lenient().when(idempotencyKeyService.generate(any(String.class), any(String.class))).thenReturn(Optional.empty());
         lenient().when(objectMapper.writeValueAsString(any())).thenReturn("{}");
         lenient().when(orderClient.startPayment(anyLong())).thenReturn(StartPaymentOutcome.STARTED);
@@ -708,6 +712,22 @@ class PaymentServiceImplTest {
             paymentService.fail(1L, new FailPaymentRequest("고객 요청"), 100L);
 
             verifyNoInteractions(pgClient, pointService);
+        }
+
+        @Test
+        @DisplayName("실패 처리 후 포인트 롤백이 동시성 충돌로 계속 실패해도 예외 없이 재시도 후 대사 대상으로 기록된다 - 결제는 이미 FAILED로 커밋된 상태라 사용자에게 예외가 새면 안 됨.")
+        void failWithPointRollbackExhaustsRetries_doesNotThrow() {
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+            when(pointService.findUsedAmount("ORDER:1:ATTEMPT:0:POINT_USE")).thenReturn(3000L);
+            doThrow(new BusinessException(PointErrorCode.POINT_CONCURRENT_MODIFICATION))
+                    .when(pointService).rollbackPoint(any(), any(), any(), anyBoolean());
+
+            assertThatCode(() -> paymentService.fail(1L, new FailPaymentRequest("고객 요청"), 100L))
+                    .doesNotThrowAnyException();
+
+            assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.FAILED);
+            verify(pointService, atLeast(2)).rollbackPoint(any(), any(), any(), anyBoolean());
+            verify(reconciliationTaskWriter).record(eq(ReconciliationTaskType.POINT_ROLLBACK_FAILED), eq(payment.getId()), eq(3000L), any());
         }
     }
 

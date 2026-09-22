@@ -12,6 +12,8 @@ import com.programmers.kdt.payment.client.refund.RefundRequestEvent;
 import com.programmers.kdt.payment.entity.outbox.OutboxEvent;
 import com.programmers.kdt.payment.entity.outbox.OutboxEventStatus;
 import com.programmers.kdt.payment.repository.OutboxEventRepository;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskType;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.payment.service.OutboxEventWriter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -43,6 +45,7 @@ public class OutboxRelayScheduler {
     private final RefundEventPublisher refundEventPublisher;
     private final OutboxEventWriter outboxEventWriter;
     private final ObjectMapper objectMapper;
+    private final ReconciliationTaskWriter reconciliationTaskWriter;
 
     @Scheduled(fixedDelay = 10000)
     @SchedulerLock(name = "outboxRelay", lockAtMostFor = "2m", lockAtLeastFor = "10s")
@@ -71,6 +74,8 @@ public class OutboxRelayScheduler {
                 outboxEventWriter.giveUp(event, e.getMessage());
                 log.error("[OUTBOX_RECONCILIATION_NEEDED] 재시도 소진 - id={}, type={}, aggregateId={}",
                         event.getId(), event.getEventType(), event.getAggregateId());
+                reconciliationTaskWriter.record(ReconciliationTaskType.OUTBOX_DELIVERY_FAILED, event.getAggregateId(),
+                        "eventType=" + event.getEventType() + ", outboxId=" + event.getId() + ", error=" + e.getMessage());
             } else {
                 event.scheduleRetry(LocalDateTime.now().plus(RETRY_BACKOFF), e.getMessage());
                 outboxEventRepository.save(event);
