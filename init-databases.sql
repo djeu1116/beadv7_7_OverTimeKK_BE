@@ -1,14 +1,17 @@
-CREATE DATABASE IF NOT EXISTS reseat CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+-- ============================================================
+-- DB 물리 분리 1단계 (2026-09-22): reseat 하나를 3개 스키마로 분리
+-- reseat        : performance-service, user-service (아직 미분리, 이번 단계 범위 밖)
+-- reseat_order   : order-service
+-- reseat_payment : payment-service
+-- 상세: Obsidian programmers/payment_order_split/db_separation_plan.md
+-- ============================================================
 
-ALTER DATABASE reseat CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+
+-- performance-service, user-service 소유 (미분리 - 계속 root 계정 공유)
+CREATE DATABASE IF NOT EXISTS reseat CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 ALTER DATABASE reseat CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 SET NAMES utf8mb4;
-USE reseat;
-
--- 아래는 로컬 개발 DB(ddl-auto=update로 유지되던 스키마)에서 mysqldump --no-data로 뜬 스냅샷.
--- ddl-auto=validate로 전환하면서, 빈 DB에 테이블을 먼저 만들어주기 위해 추가함.
--- 이후 엔티티가 바뀌면 이 파일도 같이 갱신해야 함(Hibernate가 더 이상 스키마를 안 건드리므로).
 
 /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
 /*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
@@ -20,6 +23,8 @@ USE reseat;
 /*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
 /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+USE reseat;
+
 DROP TABLE IF EXISTS `app_user`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
@@ -67,123 +72,6 @@ CREATE TABLE `idempotency_key` (
   `request_hash` varchar(255) NOT NULL,
   `response_body` longtext,
   PRIMARY KEY (`idempotency_key`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `order_item`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `order_item` (
-  `order_id` bigint NOT NULL,
-  `order_item_id` bigint NOT NULL AUTO_INCREMENT,
-  `ticket_id` bigint NOT NULL,
-  `ticket_price` bigint NOT NULL,
-  `hold_key` varchar(255) NOT NULL,
-  PRIMARY KEY (`order_item_id`),
-  KEY `FKt4dc2r9nbvbujrljv3e23iibt` (`order_id`),
-  CONSTRAINT `FKt4dc2r9nbvbujrljv3e23iibt` FOREIGN KEY (`order_id`) REFERENCES `orders` (`order_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `orders`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `orders` (
-  `order_date` date NOT NULL,
-  `cancelled_at` datetime(6) DEFAULT NULL,
-  `created_at` datetime(6) NOT NULL,
-  `expires_at` datetime(6) NOT NULL,
-  `modified_at` datetime(6) NOT NULL,
-  `order_id` bigint NOT NULL AUTO_INCREMENT,
-  `total_amount` bigint NOT NULL,
-  `user_id` bigint NOT NULL,
-  `order_status` enum('PENDING','EXPIRED','PAYMENT_STARTED','COMPLETED','CANCEL_REQUESTED','CANCELLED') NOT NULL,
-  PRIMARY KEY (`order_id`),
-  KEY `idx_order_status_expires_at` (`order_status`,`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `payment`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `payment` (
-  `amount` bigint NOT NULL,
-  `attempt_seq` int NOT NULL DEFAULT '0',
-  `created_at` datetime(6) NOT NULL,
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `modified_at` datetime(6) NOT NULL,
-  `order_id` bigint NOT NULL,
-  `refunded_amount` bigint NOT NULL,
-  `user_id` bigint NOT NULL,
-  `version` bigint NOT NULL,
-  `payment_key` varchar(255) DEFAULT NULL,
-  `pg_order_id` varchar(255) DEFAULT NULL,
-  `payment_status` enum('READY','PAID','FAILED','CONFIRM_PENDING_VERIFICATION','REFUND_PENDING','CANCELLED') NOT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `UKmf7n8wo2rwrxsd6f3t9ub2mep` (`order_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `reconciliation_task`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `reconciliation_task` (
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `task_type` varchar(50) NOT NULL,
-  `aggregate_id` bigint NOT NULL,
-  `amount` bigint DEFAULT NULL,
-  `detail` varchar(500) DEFAULT NULL,
-  `status` enum('OPEN','RESOLVED') NOT NULL DEFAULT 'OPEN',
-  `resolved_at` datetime(6) DEFAULT NULL,
-  `created_at` datetime(6) NOT NULL,
-  `modified_at` datetime(6) NOT NULL,
-  PRIMARY KEY (`id`),
-  KEY `idx_reconciliation_task_status_type` (`status`,`task_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `order_outbox_event`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `order_outbox_event` (
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `event_type` varchar(50) NOT NULL,
-  `aggregate_id` bigint NOT NULL,
-  `payload` json NOT NULL,
-  `status` enum('PENDING','SENT','FAILED') NOT NULL DEFAULT 'PENDING',
-  `attempts` int NOT NULL DEFAULT '0',
-  `next_retry_at` datetime(6) NOT NULL,
-  `last_error` varchar(500) DEFAULT NULL,
-  `created_at` datetime(6) NOT NULL,
-  `modified_at` datetime(6) NOT NULL,
-  PRIMARY KEY (`id`),
-  KEY `idx_order_outbox_status_retry` (`status`,`next_retry_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `outbox_event`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `outbox_event` (
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `event_type` varchar(50) NOT NULL,
-  `aggregate_id` bigint NOT NULL,
-  `payload` json NOT NULL,
-  `status` enum('PENDING','SENT','FAILED') NOT NULL DEFAULT 'PENDING',
-  `attempts` int NOT NULL DEFAULT '0',
-  `next_retry_at` datetime(6) NOT NULL,
-  `last_error` varchar(500) DEFAULT NULL,
-  `created_at` datetime(6) NOT NULL,
-  `modified_at` datetime(6) NOT NULL,
-  PRIMARY KEY (`id`),
-  KEY `idx_outbox_status_retry` (`status`,`next_retry_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `payment_refund`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `payment_refund` (
-  `created_at` datetime(6) NOT NULL,
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `modified_at` datetime(6) NOT NULL,
-  `payment_id` bigint NOT NULL,
-  `refund_amount` bigint NOT NULL,
-  `reason` varchar(255) DEFAULT NULL,
-  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `performance`;
@@ -234,34 +122,6 @@ CREATE TABLE `performance_session` (
   `actor` varchar(255) NOT NULL,
   PRIMARY KEY (`performance_id`,`session_num`),
   CONSTRAINT `FKmkyy6hirggrmacpvn0jr70xdk` FOREIGN KEY (`performance_id`) REFERENCES `performance` (`performance_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `point`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `point` (
-  `created_at` datetime(6) NOT NULL,
-  `modified_at` datetime(6) NOT NULL,
-  `total_point` bigint NOT NULL,
-  `user_id` bigint NOT NULL,
-  `version` bigint NOT NULL,
-  PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `point_log`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `point_log` (
-  `amount` bigint NOT NULL,
-  `created_at` datetime(6) NOT NULL,
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `modified_at` datetime(6) NOT NULL,
-  `ref_log_id` bigint DEFAULT NULL,
-  `user_id` bigint NOT NULL,
-  `event_id` varchar(255) NOT NULL,
-  `point_type` enum('CANCELLED','EARN','PARTIAL_CANCELLED','USE') NOT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `UKa5uf975gossx4qcco2ovxkgit` (`event_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `seat`;
@@ -382,6 +242,99 @@ CREATE TABLE `ticket` (
   PRIMARY KEY (`ticket_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `venue`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `venue` (
+  `created_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  `venue_id` bigint NOT NULL AUTO_INCREMENT,
+  `detail_address` varchar(255) NOT NULL,
+  `notice` varchar(255) NOT NULL,
+  `road_address` varchar(255) NOT NULL,
+  `venue_name` varchar(255) NOT NULL,
+  PRIMARY KEY (`venue_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+
+-- order-service 소유. reconciliation_task는 payment-service DB에도 동일 스키마로 복제됨(ORDER_OUTBOX_DELIVERY_FAILED만 씀)
+CREATE DATABASE IF NOT EXISTS reseat_order CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+ALTER DATABASE reseat_order CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+
+SET NAMES utf8mb4;
+
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+/*!50503 SET NAMES utf8mb4 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40103 SET TIME_ZONE='+00:00' */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+USE reseat_order;
+
+DROP TABLE IF EXISTS `orders`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `orders` (
+  `order_date` date NOT NULL,
+  `cancelled_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `expires_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  `order_id` bigint NOT NULL AUTO_INCREMENT,
+  `total_amount` bigint NOT NULL,
+  `user_id` bigint NOT NULL,
+  `order_status` enum('PENDING','EXPIRED','PAYMENT_STARTED','COMPLETED','CANCEL_REQUESTED','CANCELLED') NOT NULL,
+  PRIMARY KEY (`order_id`),
+  KEY `idx_order_status_expires_at` (`order_status`,`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `order_item`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `order_item` (
+  `order_id` bigint NOT NULL,
+  `order_item_id` bigint NOT NULL AUTO_INCREMENT,
+  `ticket_id` bigint NOT NULL,
+  `ticket_price` bigint NOT NULL,
+  `hold_key` varchar(255) NOT NULL,
+  PRIMARY KEY (`order_item_id`),
+  KEY `FKt4dc2r9nbvbujrljv3e23iibt` (`order_id`),
+  CONSTRAINT `FKt4dc2r9nbvbujrljv3e23iibt` FOREIGN KEY (`order_id`) REFERENCES `orders` (`order_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `order_outbox_event`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `order_outbox_event` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `event_type` varchar(50) NOT NULL,
+  `aggregate_id` bigint NOT NULL,
+  `payload` json NOT NULL,
+  `status` enum('PENDING','SENT','FAILED') NOT NULL DEFAULT 'PENDING',
+  `attempts` int NOT NULL DEFAULT '0',
+  `next_retry_at` datetime(6) NOT NULL,
+  `last_error` varchar(500) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_order_outbox_status_retry` (`status`,`next_retry_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `ticket_cancel_job`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
@@ -401,20 +354,24 @@ CREATE TABLE `ticket_cancel_job` (
   KEY `idx_ticket_cancel_job_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `venue`;
+DROP TABLE IF EXISTS `reconciliation_task`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `venue` (
+CREATE TABLE `reconciliation_task` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `task_type` varchar(50) NOT NULL,
+  `aggregate_id` bigint NOT NULL,
+  `amount` bigint DEFAULT NULL,
+  `detail` varchar(500) DEFAULT NULL,
+  `status` enum('OPEN','RESOLVED') NOT NULL DEFAULT 'OPEN',
+  `resolved_at` datetime(6) DEFAULT NULL,
   `created_at` datetime(6) NOT NULL,
   `modified_at` datetime(6) NOT NULL,
-  `venue_id` bigint NOT NULL AUTO_INCREMENT,
-  `detail_address` varchar(255) NOT NULL,
-  `notice` varchar(255) NOT NULL,
-  `road_address` varchar(255) NOT NULL,
-  `venue_name` varchar(255) NOT NULL,
-  PRIMARY KEY (`venue_id`)
+  PRIMARY KEY (`id`),
+  KEY `idx_reconciliation_task_status_type` (`status`,`task_type`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
@@ -424,3 +381,143 @@ CREATE TABLE `venue` (
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- DB 물리 분리 1단계: order-service 전용 계정, 자기 스키마만 접근 가능.
+-- 비밀번호는 로컬/개발용 기본값 — 실제 배포 전에는 반드시 교체(현재 INTERNAL_AUTH_TOKEN GitHub 시크릿
+-- 미등록과 같은 종류의 "코드 밖에서 조치 필요" 항목으로 남겨둠).
+CREATE USER IF NOT EXISTS 'order_service'@'%' IDENTIFIED BY 'order-service-dev-pw-change-me';
+GRANT ALL PRIVILEGES ON reseat_order.* TO 'order_service'@'%';
+FLUSH PRIVILEGES;
+
+
+-- payment-service 소유. reconciliation_task는 order-service DB에도 동일 스키마로 복제됨(나머지 8종 타입을 씀)
+CREATE DATABASE IF NOT EXISTS reseat_payment CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+ALTER DATABASE reseat_payment CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+
+SET NAMES utf8mb4;
+
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+/*!50503 SET NAMES utf8mb4 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40103 SET TIME_ZONE='+00:00' */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+USE reseat_payment;
+
+DROP TABLE IF EXISTS `payment`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `payment` (
+  `amount` bigint NOT NULL,
+  `attempt_seq` int NOT NULL DEFAULT '0',
+  `created_at` datetime(6) NOT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `modified_at` datetime(6) NOT NULL,
+  `order_id` bigint NOT NULL,
+  `refunded_amount` bigint NOT NULL,
+  `user_id` bigint NOT NULL,
+  `version` bigint NOT NULL,
+  `payment_key` varchar(255) DEFAULT NULL,
+  `pg_order_id` varchar(255) DEFAULT NULL,
+  `payment_status` enum('READY','PAID','FAILED','CONFIRM_PENDING_VERIFICATION','REFUND_PENDING','CANCELLED') NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKmf7n8wo2rwrxsd6f3t9ub2mep` (`order_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `payment_refund`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `payment_refund` (
+  `created_at` datetime(6) NOT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `modified_at` datetime(6) NOT NULL,
+  `payment_id` bigint NOT NULL,
+  `refund_amount` bigint NOT NULL,
+  `reason` varchar(255) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `point`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `point` (
+  `created_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  `total_point` bigint NOT NULL,
+  `user_id` bigint NOT NULL,
+  `version` bigint NOT NULL,
+  PRIMARY KEY (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `point_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `point_log` (
+  `amount` bigint NOT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `modified_at` datetime(6) NOT NULL,
+  `ref_log_id` bigint DEFAULT NULL,
+  `user_id` bigint NOT NULL,
+  `event_id` varchar(255) NOT NULL,
+  `point_type` enum('CANCELLED','EARN','PARTIAL_CANCELLED','USE') NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKa5uf975gossx4qcco2ovxkgit` (`event_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `outbox_event`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `outbox_event` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `event_type` varchar(50) NOT NULL,
+  `aggregate_id` bigint NOT NULL,
+  `payload` json NOT NULL,
+  `status` enum('PENDING','SENT','FAILED') NOT NULL DEFAULT 'PENDING',
+  `attempts` int NOT NULL DEFAULT '0',
+  `next_retry_at` datetime(6) NOT NULL,
+  `last_error` varchar(500) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_outbox_status_retry` (`status`,`next_retry_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `reconciliation_task`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `reconciliation_task` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `task_type` varchar(50) NOT NULL,
+  `aggregate_id` bigint NOT NULL,
+  `amount` bigint DEFAULT NULL,
+  `detail` varchar(500) DEFAULT NULL,
+  `status` enum('OPEN','RESOLVED') NOT NULL DEFAULT 'OPEN',
+  `resolved_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_reconciliation_task_status_type` (`status`,`task_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- DB 물리 분리 1단계: payment-service 전용 계정, 자기 스키마만 접근 가능.
+-- 비밀번호는 로컬/개발용 기본값 — 실제 배포 전에는 반드시 교체.
+CREATE USER IF NOT EXISTS 'payment_service'@'%' IDENTIFIED BY 'payment-service-dev-pw-change-me';
+GRANT ALL PRIVILEGES ON reseat_payment.* TO 'payment_service'@'%';
+FLUSH PRIVILEGES;
+
