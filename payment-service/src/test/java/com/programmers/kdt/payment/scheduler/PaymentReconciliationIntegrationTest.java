@@ -7,6 +7,7 @@ import com.programmers.kdt.payment.client.pg.PgApproveResult;
 import com.programmers.kdt.payment.entity.Payment;
 import com.programmers.kdt.payment.entity.PaymentStatus;
 import com.programmers.kdt.payment.entity.outbox.OutboxEventType;
+import com.programmers.kdt.payment.repository.PaymentAttemptRepository;
 import com.programmers.kdt.payment.repository.PaymentRepository;
 import com.programmers.kdt.payment.service.OutboxEventWriter;
 import com.programmers.kdt.payment.service.PointService;
@@ -39,13 +40,14 @@ public class PaymentReconciliationIntegrationTest {
     private final PointService pointService = mock(PointService.class);
     private final OutboxEventWriter outboxEventWriter = mock(OutboxEventWriter.class);
     private final ReconciliationTaskWriter reconciliationTaskWriter = mock(ReconciliationTaskWriter.class);
+    private final PaymentAttemptRepository paymentAttemptRepository = mock(PaymentAttemptRepository.class);
 
     private PaymentReconciliationScheduler scheduler;
 
     @BeforeEach
     void setUp() {
         mockPgClient.reset();
-        PaymentTxOps paymentTxOps = new PaymentTxOps(paymentRepository, pointService, outboxEventWriter);
+        PaymentTxOps paymentTxOps = new PaymentTxOps(paymentRepository, paymentAttemptRepository, pointService, outboxEventWriter);
         scheduler = new PaymentReconciliationScheduler(
                 paymentRepository, mockPgClient, paymentTxOps, pointService, reconciliationTaskWriter);
     }

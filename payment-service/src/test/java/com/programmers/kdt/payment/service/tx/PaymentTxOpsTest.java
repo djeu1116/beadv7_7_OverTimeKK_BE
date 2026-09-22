@@ -4,9 +4,12 @@ import com.programmers.kdt.common.exception.BusinessException;
 import com.programmers.kdt.common.contract.PaymentConfirmEvent;
 import com.programmers.kdt.common.contract.PaymentFailEvent;
 import com.programmers.kdt.payment.entity.Payment;
+import com.programmers.kdt.payment.entity.PaymentAttempt;
+import com.programmers.kdt.payment.entity.PaymentAttemptStatus;
 import com.programmers.kdt.payment.entity.PaymentStatus;
 import com.programmers.kdt.payment.entity.outbox.OutboxEventType;
 import com.programmers.kdt.payment.exception.PaymentErrorCode;
+import com.programmers.kdt.payment.repository.PaymentAttemptRepository;
 import com.programmers.kdt.payment.repository.PaymentRepository;
 import com.programmers.kdt.payment.service.OutboxEventWriter;
 import com.programmers.kdt.payment.service.PointService;
@@ -33,6 +36,8 @@ class PaymentTxOpsTest {
     @Mock
     private PaymentRepository paymentRepository;
     @Mock
+    private PaymentAttemptRepository paymentAttemptRepository;
+    @Mock
     private PointService pointService;
     @Mock
     private OutboxEventWriter outboxEventWriter;
@@ -41,7 +46,7 @@ class PaymentTxOpsTest {
 
     @BeforeEach
     void setUp() {
-        paymentTxOps = new PaymentTxOps(paymentRepository, pointService, outboxEventWriter);
+        paymentTxOps = new PaymentTxOps(paymentRepository, paymentAttemptRepository, pointService, outboxEventWriter);
     }
 
     private Payment readyPayment(Long id) {
@@ -67,6 +72,35 @@ class PaymentTxOpsTest {
             assertThat(result.payment().getPaymentStatus()).isEqualTo(PaymentStatus.CONFIRM_PENDING_VERIFICATION);
             assertThat(result.usedPoint()).isEqualTo(3000L);
             verify(paymentRepository).saveAndFlush(payment);
+        }
+
+        @Test
+        @DisplayName("현재 시도(attempt) 행이 있으면 그 행에도 paymentKey가 반영되고 PENDING_VERIFICATION으로 바뀐다.")
+        void updatesCurrentAttemptTooWhenPresent() {
+            Payment payment = readyPayment(1L);
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+            when(pointService.findUsedAmount(any())).thenReturn(0L);
+            PaymentAttempt attempt = PaymentAttempt.create(1L, 0, "PG_ORDER_1", 0L);
+            when(paymentAttemptRepository.findByPaymentIdAndAttemptSeq(1L, 0)).thenReturn(Optional.of(attempt));
+
+            paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1", 10L);
+
+            assertThat(attempt.getPaymentKey()).isEqualTo("PG_KEY_1");
+            assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.PENDING_VERIFICATION);
+            verify(paymentAttemptRepository).save(attempt);
+        }
+
+        @Test
+        @DisplayName("현재 시도 행이 없어도(예: 마이그레이션 이전 데이터) 예외 없이 그냥 넘어간다.")
+        void noCurrentAttempt_doesNotFail() {
+            Payment payment = readyPayment(1L);
+            when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+            when(pointService.findUsedAmount(any())).thenReturn(0L);
+            when(paymentAttemptRepository.findByPaymentIdAndAttemptSeq(1L, 0)).thenReturn(Optional.empty());
+
+            assertThatCode(() -> paymentTxOps.assignKeyAndCommit(1L, "PG_KEY_1", 10L)).doesNotThrowAnyException();
+
+            verify(paymentAttemptRepository, never()).save(any());
         }
 
         @Test
@@ -147,15 +181,18 @@ class PaymentTxOpsTest {
     class ApplyConfirmResult {
 
         @Test
-        @DisplayName("SUCCESS면 PAID로 확정하고 저장하고, PAYMENT_CONFIRMED를 outbox에 기록한다.")
+        @DisplayName("SUCCESS면 PAID로 확정하고 저장하고, PAYMENT_CONFIRMED를 outbox에 기록하고, 현재 attempt도 PAID로 남는다.")
         void success_confirmsAndSaves() {
             Payment payment = readyPayment(1L);
             payment.markPending();
             when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+            PaymentAttempt attempt = PaymentAttempt.create(1L, 0, "PG_ORDER_1", 0L);
+            when(paymentAttemptRepository.findByPaymentIdAndAttemptSeq(1L, 0)).thenReturn(Optional.of(attempt));
 
             Payment result = paymentTxOps.applyConfirmResult(1L, PgOutcome.SUCCESS);
 
             assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
+            assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.PAID);
             verify(paymentRepository).saveAndFlush(payment);
 
             ArgumentCaptor<PaymentConfirmEvent> captor = ArgumentCaptor.forClass(PaymentConfirmEvent.class);
@@ -165,15 +202,18 @@ class PaymentTxOpsTest {
         }
 
         @Test
-        @DisplayName("EXPLICIT_FAIL이면 FAILED로 확정하고 저장하고, PAYMENT_FAILED를 outbox에 기록한다.")
+        @DisplayName("EXPLICIT_FAIL이면 FAILED로 확정하고 저장하고, PAYMENT_FAILED를 outbox에 기록하고, 현재 attempt도 FAILED로 남는다.")
         void explicitFail_failsAndSaves() {
             Payment payment = readyPayment(1L);
             payment.markPending();
             when(paymentRepository.findById(1L)).thenReturn(Optional.of(payment));
+            PaymentAttempt attempt = PaymentAttempt.create(1L, 0, "PG_ORDER_1", 0L);
+            when(paymentAttemptRepository.findByPaymentIdAndAttemptSeq(1L, 0)).thenReturn(Optional.of(attempt));
 
             Payment result = paymentTxOps.applyConfirmResult(1L, PgOutcome.EXPLICIT_FAIL);
 
             assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.FAILED);
+            assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.FAILED);
             verify(paymentRepository).saveAndFlush(payment);
             verify(outboxEventWriter).enqueue(eq(OutboxEventType.PAYMENT_FAILED), eq(1L), any(PaymentFailEvent.class));
         }

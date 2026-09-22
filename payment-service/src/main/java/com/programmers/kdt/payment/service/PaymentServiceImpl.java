@@ -15,12 +15,14 @@ import com.programmers.kdt.payment.client.order.StartPaymentOutcome;
 import com.programmers.kdt.payment.client.refund.*;
 import com.programmers.kdt.payment.dto.*;
 import com.programmers.kdt.payment.entity.Payment;
+import com.programmers.kdt.payment.entity.PaymentAttempt;
 import com.programmers.kdt.payment.entity.PaymentRefund;
 import com.programmers.kdt.payment.entity.PaymentStatus;
 import com.programmers.kdt.payment.entity.RefundPolicy;
 import com.programmers.kdt.payment.entity.outbox.OutboxEventType;
 import com.programmers.kdt.payment.exception.PaymentErrorCode;
 import com.programmers.kdt.payment.exception.PointErrorCode;
+import com.programmers.kdt.payment.repository.PaymentAttemptRepository;
 import com.programmers.kdt.payment.repository.PaymentRefundRepository;
 import com.programmers.kdt.payment.repository.PaymentRepository;
 import com.programmers.kdt.payment.service.tx.PaymentTxOps;
@@ -58,6 +60,7 @@ public class PaymentServiceImpl implements PaymentService{
 
     private final PaymentRepository paymentRepository;
     private final PaymentRefundRepository paymentRefundRepository;
+    private final PaymentAttemptRepository paymentAttemptRepository;
     private final PerformanceClient performanceClient;
     private final OrderClient orderClient;
     private final PgClient pgClient;
@@ -179,6 +182,9 @@ public class PaymentServiceImpl implements PaymentService{
             payment.assignPgOrderId(readyResult.orderId());
         }
         paymentRepository.save(payment);
+        // 이 시도의 이력을 별도 행으로 남긴다 - Payment 자체는 다음 재시도 때 이 값들을 덮어쓰지만
+        // 이 행은 attemptSeq로 고정돼 있어 안 건드려진다.
+        paymentAttemptRepository.save(PaymentAttempt.create(payment.getId(), attemptSeq, readyResult.orderId(), usedPoint));
 
         return CreatePaymentResponse.of(payment, readyResult);
     }
@@ -294,6 +300,12 @@ public class PaymentServiceImpl implements PaymentService{
                 callPg("토스 결제 취소", paymentId,
                         () -> pgClient.cancel(new PgCancelCommand(payment.getPaymentKey(), payment.getAmount(), request.reason())));
             }
+
+            paymentAttemptRepository.findByPaymentIdAndAttemptSeq(payment.getId(), payment.getAttemptSeq())
+                    .ifPresent(attempt -> {
+                        attempt.markFailed();
+                        paymentAttemptRepository.save(attempt);
+                    });
 
             Long usedPoint = getUsedPointForOrder(payment);
             rollbackFailedPoint(payment, usedPoint);

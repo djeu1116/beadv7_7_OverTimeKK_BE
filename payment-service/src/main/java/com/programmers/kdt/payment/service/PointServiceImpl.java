@@ -4,9 +4,11 @@ import com.programmers.kdt.common.exception.BusinessException;
 import com.programmers.kdt.payment.dto.GetPointBalanceResponse;
 import com.programmers.kdt.payment.dto.GetPointHistoryResponse;
 import com.programmers.kdt.payment.entity.Point;
+import com.programmers.kdt.payment.entity.PointLedger;
 import com.programmers.kdt.payment.entity.PointLog;
 import com.programmers.kdt.payment.entity.PointType;
 import com.programmers.kdt.payment.exception.PointErrorCode;
+import com.programmers.kdt.payment.repository.PointLedgerRepository;
 import com.programmers.kdt.payment.repository.PointLogRepository;
 import com.programmers.kdt.payment.repository.PointRepository;
 import lombok.RequiredArgsConstructor;
@@ -30,6 +32,7 @@ public class PointServiceImpl implements PointService {
 
     private final PointRepository pointRepository;
     private final PointLogRepository pointLogRepository;
+    private final PointLedgerRepository pointLedgerRepository;
 
 
     @Override
@@ -50,7 +53,8 @@ public class PointServiceImpl implements PointService {
             throw new BusinessException(PointErrorCode.POINT_CONCURRENT_MODIFICATION);
         }
 
-        pointLogRepository.save(PointLog.use(userId, amount, eventId));
+        PointLog useLog = pointLogRepository.save(PointLog.use(userId, amount, eventId));
+        pointLedgerRepository.save(PointLedger.create(userId, useLog.getId(), amount));
     }
 
     @Override
@@ -95,6 +99,17 @@ public class PointServiceImpl implements PointService {
 
         PointLog originLog = pointLogRepository.findByEventId(originEventId)
                 .orElseThrow(() -> new BusinessException(PointErrorCode.ORIGIN_POINT_LOG_NOT_FOUND, originEventId));
+
+        // 원장이 누적 환급액을 관리 - 개별 rollbackEventId가 서로 달라도(예: 실패 경로와 보상 경로가
+        // 각각 다른 이벤트ID로 같은 사용 건을 두 번 환급하려는 경우) 여기서 막힌다.
+        PointLedger ledger = pointLedgerRepository.findByUseLogId(originLog.getId())
+                .orElseThrow(() -> new BusinessException(PointErrorCode.LEDGER_NOT_FOUND, originLog.getId()));
+        ledger.consume(amount);
+        try {
+            pointLedgerRepository.saveAndFlush(ledger);
+        } catch (ObjectOptimisticLockingFailureException e) {
+            throw new BusinessException(PointErrorCode.POINT_CONCURRENT_MODIFICATION);
+        }
 
         Point point = pointRepository.findById(originLog.getUserId())
                 .orElseThrow(() -> new BusinessException(PointErrorCode.POINT_NOT_FOUND, originLog.getUserId()));

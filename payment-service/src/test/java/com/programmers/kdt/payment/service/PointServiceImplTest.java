@@ -2,9 +2,11 @@ package com.programmers.kdt.payment.service;
 
 import com.programmers.kdt.common.exception.BusinessException;
 import com.programmers.kdt.payment.entity.Point;
+import com.programmers.kdt.payment.entity.PointLedger;
 import com.programmers.kdt.payment.entity.PointLog;
 import com.programmers.kdt.payment.entity.PointType;
 import com.programmers.kdt.payment.exception.PointErrorCode;
+import com.programmers.kdt.payment.repository.PointLedgerRepository;
 import com.programmers.kdt.payment.repository.PointLogRepository;
 import com.programmers.kdt.payment.repository.PointRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,11 +35,14 @@ class PointServiceImplTest {
     @Mock
     private PointLogRepository pointLogRepository;
 
+    @Mock
+    private PointLedgerRepository pointLedgerRepository;
+
     private PointService pointService;
 
     @BeforeEach
     void setUp() {
-        pointService = new PointServiceImpl(pointRepository, pointLogRepository);
+        pointService = new PointServiceImpl(pointRepository, pointLogRepository, pointLedgerRepository);
     }
 
     @Nested
@@ -45,7 +50,7 @@ class PointServiceImplTest {
     class UsePoint {
 
         @Test
-        @DisplayName("보유 포인트가 충분하면 정상적으로 차감되고 사용 로그가 남는다.")
+        @DisplayName("보유 포인트가 충분하면 정상적으로 차감되고 사용 로그·원장이 남는다.")
         void useSuccess() {
             // given
             Point point = Point.create(1L);
@@ -53,6 +58,11 @@ class PointServiceImplTest {
 
             when(pointLogRepository.findByEventId("ORDER:1:POINT_USE")).thenReturn(Optional.empty());
             when(pointRepository.findById(1L)).thenReturn(Optional.of(point));
+            when(pointLogRepository.save(any(PointLog.class))).thenAnswer(inv -> {
+                PointLog log = inv.getArgument(0);
+                ReflectionTestUtils.setField(log, "id", 77L);
+                return log;
+            });
 
             // when
             pointService.usePoint(1L, 3000L, "ORDER:1:POINT_USE");
@@ -69,6 +79,14 @@ class PointServiceImplTest {
             assertThat(savedLog.getAmount()).isEqualTo(3000L);
             assertThat(savedLog.getPointType()).isEqualTo(PointType.USE);
             assertThat(savedLog.getEventId()).isEqualTo("ORDER:1:POINT_USE");
+
+            ArgumentCaptor<PointLedger> ledgerCaptor = ArgumentCaptor.forClass(PointLedger.class);
+            verify(pointLedgerRepository).save(ledgerCaptor.capture());
+            PointLedger savedLedger = ledgerCaptor.getValue();
+            assertThat(savedLedger.getUserId()).isEqualTo(1L);
+            assertThat(savedLedger.getUseLogId()).isEqualTo(77L);
+            assertThat(savedLedger.getUsedAmount()).isEqualTo(3000L);
+            assertThat(savedLedger.getRemainingRefundable()).isEqualTo(3000L);
         }
 
         @Test
@@ -226,9 +244,12 @@ class PointServiceImplTest {
         void rollbackPointNotFound() {
             // given
             PointLog originLog = PointLog.use(1L, 300L, "originEventId");
+            ReflectionTestUtils.setField(originLog, "id", 10L);
+            PointLedger ledger = PointLedger.create(1L, 10L, 300L);
 
             when(pointLogRepository.findByEventId("rollbackEventId")).thenReturn(Optional.empty());
             when(pointLogRepository.findByEventId("originEventId")).thenReturn(Optional.of(originLog));
+            when(pointLedgerRepository.findByUseLogId(10L)).thenReturn(Optional.of(ledger));
             when(pointRepository.findById(1L)).thenReturn(Optional.empty());
 
             // when & then
@@ -248,9 +269,11 @@ class PointServiceImplTest {
 
             PointLog originLog = PointLog.use(1L, 300L, "originEventId");
             ReflectionTestUtils.setField(originLog, "id", 10L);
+            PointLedger ledger = PointLedger.create(1L, 10L, 300L);
 
             when(pointLogRepository.findByEventId("rollbackEventId")).thenReturn(Optional.empty());
             when(pointLogRepository.findByEventId("originEventId")).thenReturn(Optional.of(originLog));
+            when(pointLedgerRepository.findByUseLogId(10L)).thenReturn(Optional.of(ledger));
             when(pointRepository.findById(1L)).thenReturn(Optional.of(point));
 
             // when
@@ -258,6 +281,8 @@ class PointServiceImplTest {
 
             // then
             assertThat(point.getTotalPoint()).isEqualTo(1000L);
+            assertThat(ledger.getRemainingRefundable()).isEqualTo(0L);
+            verify(pointLedgerRepository).saveAndFlush(ledger);
             verify(pointRepository).saveAndFlush(point);
 
             ArgumentCaptor<PointLog> captor = ArgumentCaptor.forClass(PointLog.class);
@@ -281,9 +306,11 @@ class PointServiceImplTest {
 
             PointLog originLog = PointLog.use(1L, 300L, "originEventId");
             ReflectionTestUtils.setField(originLog, "id", 10L);
+            PointLedger ledger = PointLedger.create(1L, 10L, 300L);
 
             when(pointLogRepository.findByEventId("rollbackEventId")).thenReturn(Optional.empty());
             when(pointLogRepository.findByEventId("originEventId")).thenReturn(Optional.of(originLog));
+            when(pointLedgerRepository.findByUseLogId(10L)).thenReturn(Optional.of(ledger));
             when(pointRepository.findById(1L)).thenReturn(Optional.of(point));
 
             // when
@@ -291,6 +318,7 @@ class PointServiceImplTest {
 
             // then
             assertThat(point.getTotalPoint()).isEqualTo(850L);
+            assertThat(ledger.getRemainingRefundable()).isEqualTo(150L);
 
             ArgumentCaptor<PointLog> captor = ArgumentCaptor.forClass(PointLog.class);
             verify(pointLogRepository).save(captor.capture());
@@ -308,9 +336,11 @@ class PointServiceImplTest {
 
             PointLog originLog = PointLog.use(1L, 300L, "originEventId");
             ReflectionTestUtils.setField(originLog, "id", 10L);
+            PointLedger ledger = PointLedger.create(1L, 10L, 300L);
 
             when(pointLogRepository.findByEventId("rollbackEventId")).thenReturn(Optional.empty());
             when(pointLogRepository.findByEventId("originEventId")).thenReturn(Optional.of(originLog));
+            when(pointLedgerRepository.findByUseLogId(10L)).thenReturn(Optional.of(ledger));
             when(pointRepository.findById(1L)).thenReturn(Optional.of(point));
             when(pointRepository.saveAndFlush(point))
                     .thenThrow(new ObjectOptimisticLockingFailureException(Point.class, 1L));
@@ -338,6 +368,83 @@ class PointServiceImplTest {
                     .isInstanceOf(BusinessException.class)
                     .extracting(e -> ((BusinessException) e).getErrorCode())
                     .isEqualTo(PointErrorCode.ORIGIN_POINT_LOG_NOT_FOUND);
+
+            verifyNoInteractions(pointRepository);
+        }
+
+        @Test
+        @DisplayName("원본 사용 로그의 원장이 없으면 LEDGER_NOT_FOUND 예외가 발생한다.")
+        void rollbackLedgerNotFound() {
+            // given
+            PointLog originLog = PointLog.use(1L, 300L, "originEventId");
+            ReflectionTestUtils.setField(originLog, "id", 10L);
+
+            when(pointLogRepository.findByEventId("rollbackEventId")).thenReturn(Optional.empty());
+            when(pointLogRepository.findByEventId("originEventId")).thenReturn(Optional.of(originLog));
+            when(pointLedgerRepository.findByUseLogId(10L)).thenReturn(Optional.empty());
+
+            // when & then
+            assertThatThrownBy(() -> pointService.rollbackPoint("originEventId", 300L, "rollbackEventId", true))
+                    .isInstanceOf(BusinessException.class)
+                    .extracting(e -> ((BusinessException) e).getErrorCode())
+                    .isEqualTo(PointErrorCode.LEDGER_NOT_FOUND);
+
+            verifyNoInteractions(pointRepository);
+        }
+
+        @Test
+        @DisplayName("서로 다른 rollbackEventId로 같은 사용 건을 두 번 환급하려 하면, 누적이 원본을 넘는 순간 두 번째 호출이 막힌다 - " +
+                "각 호출은 원본 대비로는 개별적으로 유효해 보이지만 원장의 누적 잔액이 이를 막는다.")
+        void rollbackTwiceWithDifferentEventIdsExceedsCumulativeLimit() {
+            // given - 300 사용, 원장 remaining=300
+            Point point = Point.create(1L);
+            point.earn(1000L);
+            point.use(300L);
+
+            PointLog originLog = PointLog.use(1L, 300L, "originEventId");
+            ReflectionTestUtils.setField(originLog, "id", 10L);
+            PointLedger ledger = PointLedger.create(1L, 10L, 300L);
+
+            when(pointLogRepository.findByEventId("originEventId")).thenReturn(Optional.of(originLog));
+            when(pointLedgerRepository.findByUseLogId(10L)).thenReturn(Optional.of(ledger));
+            when(pointRepository.findById(1L)).thenReturn(Optional.of(point));
+
+            // when - 첫 번째 환급(실패 경로): 200원만 먼저 환급 - 성공, remaining=100
+            when(pointLogRepository.findByEventId("rollbackEventId-A")).thenReturn(Optional.empty());
+            pointService.rollbackPoint("originEventId", 200L, "rollbackEventId-A", false);
+            assertThat(ledger.getRemainingRefundable()).isEqualTo(100L);
+
+            // then - 두 번째 환급(다른 경로, 다른 rollbackEventId): 150원 요청 - 원본(300) 대비로는 유효해 보이지만
+            // 남은 한도(100)를 넘어서 막혀야 한다. 원장이 없었다면 이 두 번째 호출도 통과해서 이중 환급이 났을 것.
+            when(pointLogRepository.findByEventId("rollbackEventId-B")).thenReturn(Optional.empty());
+            assertThatThrownBy(() -> pointService.rollbackPoint("originEventId", 150L, "rollbackEventId-B", true))
+                    .isInstanceOf(BusinessException.class)
+                    .extracting(e -> ((BusinessException) e).getErrorCode())
+                    .isEqualTo(PointErrorCode.LEDGER_REMAINING_EXCEEDED);
+
+            // 잔여 한도는 실패한 두 번째 시도로 인해 변하지 않아야 한다
+            assertThat(ledger.getRemainingRefundable()).isEqualTo(100L);
+        }
+
+        @Test
+        @DisplayName("원장 갱신 중 동시성 충돌이 발생하면 POINT_CONCURRENT_MODIFICATION으로 변환된다.")
+        void rollbackLedgerConcurrentModification() {
+            // given
+            PointLog originLog = PointLog.use(1L, 300L, "originEventId");
+            ReflectionTestUtils.setField(originLog, "id", 10L);
+            PointLedger ledger = PointLedger.create(1L, 10L, 300L);
+
+            when(pointLogRepository.findByEventId("rollbackEventId")).thenReturn(Optional.empty());
+            when(pointLogRepository.findByEventId("originEventId")).thenReturn(Optional.of(originLog));
+            when(pointLedgerRepository.findByUseLogId(10L)).thenReturn(Optional.of(ledger));
+            when(pointLedgerRepository.saveAndFlush(ledger))
+                    .thenThrow(new ObjectOptimisticLockingFailureException(PointLedger.class, 1L));
+
+            // when & then
+            assertThatThrownBy(() -> pointService.rollbackPoint("originEventId", 300L, "rollbackEventId", true))
+                    .isInstanceOf(BusinessException.class)
+                    .extracting(e -> ((BusinessException) e).getErrorCode())
+                    .isEqualTo(PointErrorCode.POINT_CONCURRENT_MODIFICATION);
 
             verifyNoInteractions(pointRepository);
         }

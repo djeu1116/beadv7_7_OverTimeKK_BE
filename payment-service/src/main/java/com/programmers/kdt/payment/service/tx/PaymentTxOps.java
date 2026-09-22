@@ -4,9 +4,11 @@ import com.programmers.kdt.common.exception.BusinessException;
 import com.programmers.kdt.common.contract.PaymentConfirmEvent;
 import com.programmers.kdt.common.contract.PaymentFailEvent;
 import com.programmers.kdt.payment.entity.Payment;
+import com.programmers.kdt.payment.entity.PaymentAttempt;
 import com.programmers.kdt.payment.entity.PaymentStatus;
 import com.programmers.kdt.payment.entity.outbox.OutboxEventType;
 import com.programmers.kdt.payment.exception.PaymentErrorCode;
+import com.programmers.kdt.payment.repository.PaymentAttemptRepository;
 import com.programmers.kdt.payment.repository.PaymentRepository;
 import com.programmers.kdt.payment.service.OutboxEventWriter;
 import com.programmers.kdt.payment.service.PointService;
@@ -17,11 +19,14 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Optional;
+
 @Component
 @RequiredArgsConstructor
 public class PaymentTxOps {
 
     private final PaymentRepository paymentRepository;
+    private final PaymentAttemptRepository paymentAttemptRepository;
     private final PointService pointService;
     private final OutboxEventWriter outboxEventWriter;
 
@@ -51,6 +56,11 @@ public class PaymentTxOps {
         } catch (ObjectOptimisticLockingFailureException e) {
             throw new BusinessException(PaymentErrorCode.PAYMENT_CONCURRENT_MODIFICATION);
         }
+        findCurrentAttempt(payment).ifPresent(attempt -> {
+            attempt.assignPaymentKey(transactionKey);
+            attempt.markPending();
+            paymentAttemptRepository.save(attempt);
+        });
 
         Long usedPoint = pointService.findUsedAmount(PointEventIds.useEventId(payment.getOrderId(), payment.getAttemptSeq()));
         return new ReadyPaymentContext(payment, usedPoint == null ? 0L : usedPoint);
@@ -75,6 +85,7 @@ public class PaymentTxOps {
             throw new BusinessException(PaymentErrorCode.PAYMENT_CONCURRENT_MODIFICATION);
         }
 
+        markAttemptOutcome(payment, pgOutcome);
         enqueueResultEvent(payment, statusBefore, pgOutcome);
         return payment;
     }
@@ -96,8 +107,25 @@ public class PaymentTxOps {
             throw new BusinessException(PaymentErrorCode.PAYMENT_CONCURRENT_MODIFICATION);
         }
 
+        markAttemptOutcome(payment, pgOutcome);
         enqueueResultEvent(payment, statusBefore, pgOutcome);
         return payment;
+    }
+
+    private Optional<PaymentAttempt> findCurrentAttempt(Payment payment) {
+        return paymentAttemptRepository.findByPaymentIdAndAttemptSeq(payment.getId(), payment.getAttemptSeq());
+    }
+
+    // AMBIGUOUS는 호출부에서 걸러지고(early return) 여기 안 들어오므로 SUCCESS/EXPLICIT_FAIL만 온다
+    private void markAttemptOutcome(Payment payment, PgOutcome pgOutcome) {
+        findCurrentAttempt(payment).ifPresent(attempt -> {
+            switch (pgOutcome) {
+                case SUCCESS -> attempt.markPaid();
+                case EXPLICIT_FAIL -> attempt.markFailed();
+                case AMBIGUOUS -> { }
+            }
+            paymentAttemptRepository.save(attempt);
+        });
     }
 
     // 상태가 실제로 바뀐 경우에만 기록 - confirmVerifiedSuccess/Fail은 이미 같은 상태면 조용히 무시하므로,

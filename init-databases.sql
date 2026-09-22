@@ -469,6 +469,22 @@ CREATE TABLE `point_log` (
   UNIQUE KEY `UKa5uf975gossx4qcco2ovxkgit` (`event_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `point_ledger`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `point_ledger` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `created_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  `user_id` bigint NOT NULL,
+  `use_log_id` bigint NOT NULL,
+  `used_amount` bigint NOT NULL,
+  `remaining_refundable` bigint NOT NULL,
+  `version` bigint NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_point_ledger_use_log_id` (`use_log_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `outbox_event`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;

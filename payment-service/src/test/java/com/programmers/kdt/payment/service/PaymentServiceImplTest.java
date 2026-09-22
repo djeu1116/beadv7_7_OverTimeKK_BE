@@ -20,6 +20,7 @@ import com.programmers.kdt.payment.exception.PaymentErrorCode;
 import com.programmers.kdt.common.reconciliation.ReconciliationTaskType;
 import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.payment.exception.PointErrorCode;
+import com.programmers.kdt.payment.repository.PaymentAttemptRepository;
 import com.programmers.kdt.payment.repository.PaymentRefundRepository;
 import com.programmers.kdt.payment.repository.PaymentRepository;
 import com.programmers.kdt.payment.service.tx.PaymentTxOps;
@@ -56,6 +57,8 @@ class PaymentServiceImplTest {
     @Mock
     private PaymentRefundRepository paymentRefundRepository;
     @Mock
+    private PaymentAttemptRepository paymentAttemptRepository;
+    @Mock
     private PgClient pgClient;
     @Mock
     private OrderClient orderClient;
@@ -80,7 +83,7 @@ class PaymentServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        paymentService = new PaymentServiceImpl(paymentRepository, paymentRefundRepository, performanceClient, orderClient, pgClient, pointService, idempotencyKeyService, objectMapper, paymentTxOps, outboxEventWriter, reconciliationTaskWriter);
+        paymentService = new PaymentServiceImpl(paymentRepository, paymentRefundRepository, paymentAttemptRepository, performanceClient, orderClient, pgClient, pointService, idempotencyKeyService, objectMapper, paymentTxOps, outboxEventWriter, reconciliationTaskWriter);
         lenient().when(idempotencyKeyService.generate(any(String.class), any(String.class))).thenReturn(Optional.empty());
         lenient().when(objectMapper.writeValueAsString(any())).thenReturn("{}");
         lenient().when(orderClient.startPayment(anyLong())).thenReturn(StartPaymentOutcome.STARTED);
