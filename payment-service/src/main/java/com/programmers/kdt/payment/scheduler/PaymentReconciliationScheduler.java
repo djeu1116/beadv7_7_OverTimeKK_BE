@@ -2,6 +2,8 @@ package com.programmers.kdt.payment.scheduler;
 
 import com.programmers.kdt.common.exception.BusinessException;
 import com.programmers.kdt.payment.client.pg.PgApproveResult;
+import com.programmers.kdt.payment.client.pg.PgCancelCommand;
+import com.programmers.kdt.payment.client.pg.PgCancelResult;
 import com.programmers.kdt.payment.client.pg.PgClient;
 import com.programmers.kdt.payment.client.pg.PgClientException;
 import com.programmers.kdt.payment.entity.Payment;
@@ -94,9 +96,41 @@ public class PaymentReconciliationScheduler {
         log.error("[PG_CONFIRM_RECONCILIATION_NEEDED] 재조회 시간 초과로 결제 실패 처리 - paymentId={}, orderId={}, pendingSince={} ", payment.getId(), payment.getOrderId(), payment.getModifiedAt());
         reconciliationTaskWriter.record(ReconciliationTaskType.PG_CONFIRM_TIMEOUT_FORCE_FAILED, payment.getId(),
                 "orderId=" + payment.getOrderId() + ", pendingSince=" + payment.getModifiedAt());
-        Payment resolved = paymentTxOps.applyReconcileResult(payment.getId(), PgOutcome.EXPLICIT_FAIL);
-        rollbackFailedPoint(resolved);
+
+        Long usedPoint = resolvedUsedPoint(PointEventIds.useEventId(payment.getOrderId(), payment.getAttemptSeq()));
+        attemptGiveUpCancel(payment, usedPoint);
+
+        paymentTxOps.applyReconcileResult(payment.getId(), PgOutcome.EXPLICIT_FAIL);
+        rollbackPointWithRetry(payment, usedPoint);
         return true;
+    }
+
+    // 재조회를 포기하고 강제 실패 처리하기 전에 안전망으로 PG 취소를 시도한다.
+    // 실제로는 승인이 안 됐던 경우(select가 계속 응답 없었을 뿐) PG가 "결제 없음" 류로 거절하니 안전하고,
+    // 실제로는 승인돼 있었던 경우 이 취소로 "돈 받고 환불 안 됨" 상태를 막는다.
+    // 이 취소 시도마저 결과가 불확실하면(응답 실패/네트워크 오류) 돈이 PG쪽에 묶여 있을 수 있으므로 별도로 기록 -
+    // 이후 일일 대사 배치(PaymentDailySettlementReconciliationScheduler)가 이 결제를 다시 훑어 재포착한다.
+    private void attemptGiveUpCancel(Payment payment, Long usedPoint) {
+        Long cancelAmount = payment.getAmount() - usedPoint;
+        try {
+            PgCancelResult result = pgClient.cancel(
+                    new PgCancelCommand(payment.getPaymentKey(), cancelAmount, "CONFIRM_TIMEOUT_GIVE_UP"));
+            if (!result.success()) {
+                recordCancelUncertain(payment, "PG 취소 응답 success=false");
+            }
+        } catch (PgClientException e) {
+            // 승인 자체가 없었을 가능성이 높은 거절(존재하지 않는 결제 등) - 대사 테이블에는 안 남기고 로그만
+            log.warn("재조회 포기 시 PG 취소가 거절됨(승인 전이었을 가능성) - paymentId={}, pgCode={}", payment.getId(), e.getPgErrorCode());
+        } catch (RestClientException e) {
+            recordCancelUncertain(payment, "PG 취소 요청 자체가 실패(응답 없음)");
+        }
+    }
+
+    private void recordCancelUncertain(Payment payment, String detail) {
+        log.error("[PG_CONFIRM_TIMEOUT_CANCEL_UNCERTAIN] 재조회 포기 후 안전망 PG 취소도 불확실 - paymentId={}, orderId={}",
+                payment.getId(), payment.getOrderId());
+        reconciliationTaskWriter.record(ReconciliationTaskType.PG_CONFIRM_TIMEOUT_CANCEL_UNCERTAIN, payment.getId(),
+                "orderId=" + payment.getOrderId() + ", detail=" + detail);
     }
 
     private void rollbackFailedPoint(Payment payment) {

@@ -2,8 +2,10 @@ package com.programmers.kdt.payment.scheduler;
 
 import com.programmers.kdt.common.contract.PaymentConfirmEvent;
 import com.programmers.kdt.common.contract.PaymentFailEvent;
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskType;
 import com.programmers.kdt.payment.client.pg.MockPgClient;
 import com.programmers.kdt.payment.client.pg.PgApproveResult;
+import com.programmers.kdt.payment.client.pg.PgCancelCommand;
 import com.programmers.kdt.payment.entity.Payment;
 import com.programmers.kdt.payment.entity.PaymentStatus;
 import com.programmers.kdt.payment.entity.outbox.OutboxEventType;
@@ -141,5 +143,24 @@ public class PaymentReconciliationIntegrationTest {
         assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
         verify(outboxEventWriter).enqueue(eq(OutboxEventType.PAYMENT_CONFIRMED), eq(result.getId()),
                 eq(new PaymentConfirmEvent(result.getOrderId(), result.getId())));
+    }
+
+    @Test
+    @DisplayName("실제 DB 기준으로, 재조회 포기(GIVE_UP_THRESHOLD 10분 초과) 시 안전망 PG 취소를 시도한 뒤 FAILED로 확정, 포인트 롤백, 대사 테이블 기록까지 이어진다.")
+    void reconcile_givesUp_attemptsCancelThenFailsAndRollsBack() {
+        Payment pending = persistPendingPayment("PG_KEY_GIVE_UP", java.time.Duration.ofMinutes(11));
+        mockPgClient.stubSelect("PG_KEY_GIVE_UP", () -> { throw new RestClientException("simulated timeout"); });
+        when(pointService.findUsedAmount(anyString())).thenReturn(2000L);
+
+        scheduler.reconcilePayments();
+
+        Payment result = paymentRepository.findById(pending.getId()).orElseThrow();
+        assertThat(result.getPaymentStatus()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(mockPgClient.getCancelCalls()).hasSize(1);
+        PgCancelCommand cancelCall = mockPgClient.getCancelCalls().get(0);
+        assertThat(cancelCall.transactionKey()).isEqualTo("PG_KEY_GIVE_UP");
+        assertThat(cancelCall.cancelAmount()).isEqualTo(8000L); // amount(10000) - usedPoint(2000)
+        verify(pointService).rollbackPoint(anyString(), eq(2000L), anyString(), eq(true));
+        verify(reconciliationTaskWriter).record(eq(ReconciliationTaskType.PG_CONFIRM_TIMEOUT_FORCE_FAILED), eq(result.getId()), anyString());
     }
 }

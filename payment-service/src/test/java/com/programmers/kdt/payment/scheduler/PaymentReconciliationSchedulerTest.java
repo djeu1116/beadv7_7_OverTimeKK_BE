@@ -1,7 +1,10 @@
 package com.programmers.kdt.payment.scheduler;
 
+import com.programmers.kdt.common.reconciliation.ReconciliationTaskType;
 import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.payment.client.pg.PgApproveResult;
+import com.programmers.kdt.payment.client.pg.PgCancelCommand;
+import com.programmers.kdt.payment.client.pg.PgCancelResult;
 import com.programmers.kdt.payment.client.pg.PgClient;
 import com.programmers.kdt.payment.client.pg.PgClientException;
 import com.programmers.kdt.payment.entity.Payment;
@@ -15,6 +18,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
@@ -24,6 +28,7 @@ import org.springframework.web.client.RestClientException;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 
 
@@ -135,17 +140,88 @@ class PaymentReconciliationSchedulerTest {
     }
 
     @Test
-    @DisplayName("임계값(10분)을 넘도록 계속 응답이 없으면 실패 처리로 확정짓는다.")
+    @DisplayName("임계값(10분)을 넘도록 계속 응답이 없으면 안전망으로 PG 취소를 시도하고 실패 처리로 확정짓는다.")
     void overThreshold_givesUpAndFails() {
         Payment payment = pendingPayment(5L, LocalDateTime.now().minusMinutes(10).minusSeconds(5));
         stubPending(payment);
         when(pgClient.select("PG_KEY_5")).thenThrow(new RestClientException("timeout"));
+        when(pgClient.cancel(any())).thenReturn(new PgCancelResult(true, LocalDateTime.now()));
         when(paymentTxOps.applyReconcileResult(5L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
         when(pointService.findUsedAmount(anyString())).thenReturn(0L);
 
         scheduler.reconcilePayments();
 
+        verify(pgClient).cancel(any());
         verify(paymentTxOps).applyReconcileResult(5L, PgOutcome.EXPLICIT_FAIL);
+        verify(reconciliationTaskWriter, never())
+                .record(eq(ReconciliationTaskType.PG_CONFIRM_TIMEOUT_CANCEL_UNCERTAIN), any(), anyString());
+    }
+
+    @Test
+    @DisplayName("안전망 PG 취소 요청 자체가 실패(네트워크 오류)하면 CANCEL_UNCERTAIN으로 대사 테이블에 남긴다.")
+    void giveUp_cancelRequestFails_recordsCancelUncertain() {
+        Payment payment = pendingPayment(8L, LocalDateTime.now().minusMinutes(10).minusSeconds(5));
+        stubPending(payment);
+        when(pgClient.select("PG_KEY_8")).thenThrow(new RestClientException("timeout"));
+        when(pgClient.cancel(any())).thenThrow(new RestClientException("cancel timeout"));
+        when(paymentTxOps.applyReconcileResult(8L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
+        when(pointService.findUsedAmount(anyString())).thenReturn(0L);
+
+        scheduler.reconcilePayments();
+
+        verify(reconciliationTaskWriter)
+                .record(eq(ReconciliationTaskType.PG_CONFIRM_TIMEOUT_CANCEL_UNCERTAIN), eq(8L), anyString());
+        verify(paymentTxOps).applyReconcileResult(8L, PgOutcome.EXPLICIT_FAIL);
+    }
+
+    @Test
+    @DisplayName("안전망 PG 취소가 success=false로 응답해도 CANCEL_UNCERTAIN으로 남긴다.")
+    void giveUp_cancelReturnsFalse_recordsCancelUncertain() {
+        Payment payment = pendingPayment(9L, LocalDateTime.now().minusMinutes(10).minusSeconds(5));
+        stubPending(payment);
+        when(pgClient.select("PG_KEY_9")).thenThrow(new RestClientException("timeout"));
+        when(pgClient.cancel(any())).thenReturn(new PgCancelResult(false, null));
+        when(paymentTxOps.applyReconcileResult(9L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
+        when(pointService.findUsedAmount(anyString())).thenReturn(0L);
+
+        scheduler.reconcilePayments();
+
+        verify(reconciliationTaskWriter)
+                .record(eq(ReconciliationTaskType.PG_CONFIRM_TIMEOUT_CANCEL_UNCERTAIN), eq(9L), anyString());
+    }
+
+    @Test
+    @DisplayName("안전망 PG 취소가 PgClientException(승인 전이었을 가능성)으로 거절되면 CANCEL_UNCERTAIN은 남기지 않는다.")
+    void giveUp_cancelRejectedByPg_doesNotRecordCancelUncertain() {
+        Payment payment = pendingPayment(11L, LocalDateTime.now().minusMinutes(10).minusSeconds(5));
+        stubPending(payment);
+        when(pgClient.select("PG_KEY_11")).thenThrow(new RestClientException("timeout"));
+        when(pgClient.cancel(any())).thenThrow(new PgClientException("NOT_FOUND", "결제가 존재하지 않음"));
+        when(paymentTxOps.applyReconcileResult(11L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
+        when(pointService.findUsedAmount(anyString())).thenReturn(0L);
+
+        scheduler.reconcilePayments();
+
+        verify(reconciliationTaskWriter, never())
+                .record(eq(ReconciliationTaskType.PG_CONFIRM_TIMEOUT_CANCEL_UNCERTAIN), any(), anyString());
+        verify(paymentTxOps).applyReconcileResult(11L, PgOutcome.EXPLICIT_FAIL);
+    }
+
+    @Test
+    @DisplayName("안전망 PG 취소 금액은 실제로 PG가 받은 금액(전체 금액 - 사용 포인트)이다.")
+    void giveUp_cancelAmountExcludesUsedPoint() {
+        Payment payment = pendingPayment(12L, LocalDateTime.now().minusMinutes(10).minusSeconds(5)); // amount=10000
+        stubPending(payment);
+        when(pgClient.select("PG_KEY_12")).thenThrow(new RestClientException("timeout"));
+        when(pgClient.cancel(any())).thenReturn(new PgCancelResult(true, LocalDateTime.now()));
+        when(paymentTxOps.applyReconcileResult(12L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
+        when(pointService.findUsedAmount(anyString())).thenReturn(3000L);
+
+        scheduler.reconcilePayments();
+
+        ArgumentCaptor<PgCancelCommand> captor = ArgumentCaptor.forClass(PgCancelCommand.class);
+        verify(pgClient).cancel(captor.capture());
+        assertThat(captor.getValue().cancelAmount()).isEqualTo(7000L);
     }
 
     @Test

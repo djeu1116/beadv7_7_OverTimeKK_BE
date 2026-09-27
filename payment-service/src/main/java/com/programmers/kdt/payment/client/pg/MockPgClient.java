@@ -7,11 +7,13 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
@@ -28,6 +30,8 @@ public class MockPgClient implements PgClient {
     // transactionKey(payment.paymentKey)는 테스트 스크립트가 전부 같은 문자열을 재사용해서 키로 못 씀 —
     // pgOrderId는 pay() 시점에 payment마다 한 번만 생성되고 이후 안 바뀌므로 payment 단위 카운팅에 씀.
     private final Map<String, AtomicLong> approveCallCounts = new ConcurrentHashMap<>();
+    // 재조회 포기 시 안전망 취소가 실제로 호출되는지(파라미터 포함) 테스트에서 확인하기 위한 기록.
+    private final List<PgCancelCommand> cancelCalls = new CopyOnWriteArrayList<>();
 
     @Value("${pg.mock.approve-delay-ms:0}")
     private long approveDelayMs;
@@ -40,10 +44,15 @@ public class MockPgClient implements PgClient {
         selectBehaviors.computeIfAbsent(paymentKey, k -> new ConcurrentLinkedQueue<>()).add(behavior);
     }
 
+    public List<PgCancelCommand> getCancelCalls() {
+        return cancelCalls;
+    }
+
     public void reset() {
         approveBehaviors.clear();
         selectBehaviors.clear();
         approveCallCounts.clear();
+        cancelCalls.clear();
     }
 
     @Override
@@ -63,6 +72,7 @@ public class MockPgClient implements PgClient {
 
     @Override
     public PgCancelResult cancel(PgCancelCommand command) {
+        cancelCalls.add(command);
         return new PgCancelResult(true, LocalDateTime.now());
     }
 
