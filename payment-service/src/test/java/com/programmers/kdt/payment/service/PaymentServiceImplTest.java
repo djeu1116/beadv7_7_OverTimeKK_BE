@@ -124,6 +124,22 @@ class PaymentServiceImplTest {
         }
 
         @Test
+        @DisplayName("멱등키는 userId로 스코프된다 - 다른 사용자가 같은 idempotencyKey 문자열을 써도 서로 다른 Redis 키로 취급된다(L-1).")
+        void idempotencyKeyIsScopedByUserId() {
+            PgReadyResult readyResult = mock(PgReadyResult.class);
+            when(readyResult.transactionKey()).thenReturn("PG_KEY_123");
+            when(readyResult.orderId()).thenReturn("PG_ORDER_1");
+            when(readyResult.redirectionUrl()).thenReturn("https://pg.example/redirect");
+            when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
+            when(paymentRepository.findByOrderId(1L)).thenReturn(Optional.empty());
+            when(pgClient.ready(any())).thenReturn(readyResult);
+
+            paymentService.pay("shared-key", request, 1L);
+
+            verify(idempotencyKeyService).generate(eq("PAY:1:shared-key"), anyString());
+        }
+
+        @Test
         @DisplayName("주문 전이 이후 단계가 실패하면 결제 시작 전이를 되돌린다 - 주문/결제가 다른 트랜잭션일 때 대비.")
         void failureAfterOrderTransition_compensatesPaymentStart() {
             when(orderClient.findOrder(1L)).thenReturn(Optional.of(new OrderInfo(1L, 1L, 10000L)));
@@ -428,6 +444,28 @@ class PaymentServiceImplTest {
         }
 
         @Test
+        @DisplayName("멱등키는 userId로 스코프된다 - 다른 사용자가 같은 idempotencyKey 문자열을 써도 서로 다른 Redis 키로 취급된다(L-1).")
+        void idempotencyKeyIsScopedByUserId() {
+            when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
+                    .thenAnswer(inv -> {
+                        payment.markPending();
+                        return new PaymentTxOps.ReadyPaymentContext(payment, 0L);
+                    });
+            when(paymentTxOps.applyConfirmResult(eq(1L), eq(PgOutcome.SUCCESS)))
+                    .thenAnswer(inv -> {
+                        payment.confirmVerifiedSuccess();
+                        return payment;
+                    });
+            PgApproveResult approveResult = mock(PgApproveResult.class);
+            when(approveResult.success()).thenReturn(true);
+            when(pgClient.approve(any())).thenReturn(approveResult);
+
+            paymentService.confirm(1L, new ConfirmPaymentRequest("PG_KEY_123"), "shared-key", 100L);
+
+            verify(idempotencyKeyService).generate(eq("CONFIRM:100:shared-key"), anyString());
+        }
+
+        @Test
         @DisplayName("PG 승인이 실패하면 결제 상태가 FAILED로 바뀐다.")
         void confirmFailure() {
             when(paymentTxOps.assignKeyAndCommit(eq(1L), any(), any()))
@@ -531,7 +569,7 @@ class PaymentServiceImplTest {
 
             assertThat(payment.getPaymentStatus()).isEqualTo(PaymentStatus.CONFIRM_PENDING_VERIFICATION);
             verify(paymentTxOps, never()).applyConfirmResult(anyLong(), any());
-            verify(idempotencyKeyService).release("CONFIRM:idem-key");
+            verify(idempotencyKeyService).release("CONFIRM:100:idem-key");
         }
 
         @Test

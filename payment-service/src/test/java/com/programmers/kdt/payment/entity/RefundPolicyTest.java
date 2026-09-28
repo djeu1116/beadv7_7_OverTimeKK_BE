@@ -46,4 +46,17 @@ class RefundPolicyTest {
 
         assertThat(RefundPolicy.calculateRefundAmount(amount, rate)).isEqualTo(expected);
     }
+
+    @Test
+    @DisplayName("10원 단위 반올림 결과가 원금을 넘으면 원금으로 clamp한다(L-2) - 안 그러면 Toss가 초과 환불로 거절해 환불이 영구히 막힘.")
+    void calculateRefundAmount_roundingNeverExceedsPrincipal() {
+        // 9997 * 1.0 / 10 = 999.7 -> 반올림하면 1000 -> *10 = 10000 (원금 9997을 3원 초과)
+        assertThat(RefundPolicy.calculateRefundAmount(9997L, 1.0)).isEqualTo(9997L);
+    }
+
+    @Test
+    @DisplayName("반올림 결과가 원금 이하면 그대로 반올림된 값을 쓴다(clamp가 정상 케이스에 영향 안 줌).")
+    void calculateRefundAmount_belowPrincipal_notClamped() {
+        assertThat(RefundPolicy.calculateRefundAmount(9990L, 1.0)).isEqualTo(9990L);
+    }
 }

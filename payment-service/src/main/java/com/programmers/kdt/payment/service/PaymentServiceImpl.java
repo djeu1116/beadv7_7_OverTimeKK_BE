@@ -74,7 +74,10 @@ public class PaymentServiceImpl implements PaymentService{
 
     @Transactional
     public CreatePaymentResponse pay(String idempotencyKey, CreatePaymentRequest request, Long userId) {
-        String key = "PAY:" + idempotencyKey;
+        // userId로 스코프해서 다른 사용자가 같은 idempotencyKey 문자열을 쓰더라도(추측/재사용) 서로 다른
+        // 키로 취급한다 - 안 그러면 캐시 hit 시 소유권 검증(doPay/doConfirm 안)을 아예 안 거치고
+        // 다른 사용자의 캐시된 응답을 그대로 돌려줄 수 있음(L-1).
+        String key = "PAY:" + userId + ":" + idempotencyKey;
         String requestHash = hashRequest(request);
         Optional<String> cached = idempotencyKeyService.generate(key, requestHash);
         if (cached.isPresent()) {
@@ -190,7 +193,8 @@ public class PaymentServiceImpl implements PaymentService{
     }
 
     public ConfirmPaymentResponse confirm(Long paymentId, ConfirmPaymentRequest request, String idempotencyKey, Long userId) {
-        String key = "CONFIRM:" + idempotencyKey;
+        // pay()와 같은 이유(L-1) - userId로 스코프해서 캐시 hit가 곧 "내 캐시"임을 보장한다.
+        String key = "CONFIRM:" + userId + ":" + idempotencyKey;
         String requestHash = hashRequest(request);
         Map<String, Long> timings = new LinkedHashMap<>();
         long start = System.nanoTime();
