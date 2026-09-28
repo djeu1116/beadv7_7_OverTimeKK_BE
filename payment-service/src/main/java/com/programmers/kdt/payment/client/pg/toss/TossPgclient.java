@@ -73,6 +73,7 @@ public class TossPgclient implements PgClient {
 
             TossCancelResponse response = restClient.post()
                     .uri("/v1/payments/{paymentKey}/cancel", command.transactionKey())
+                    .header("Idempotency-Key", command.idempotencyKey())
                     .body(body)
                     .retrieve()
                     .body(TossCancelResponse.class);
@@ -93,7 +94,7 @@ public class TossPgclient implements PgClient {
     }
 
     @Override
-    public PgApproveResult select(String paymentKey) {
+    public PgApproveResult select(String paymentKey, String expectedPgOrderId, Long expectedAmount) {
         try {
             TossConfirmResponse response = restClient.get()
                     .uri("/v1/payments/{paymentKey}", paymentKey)
@@ -101,6 +102,11 @@ public class TossPgclient implements PgClient {
                     .body(TossConfirmResponse.class);
 
             boolean success = "DONE".equals(response.status());
+            if (success) {
+                // "성공"이라는 응답 자체를 그대로 신뢰하지 않고, 우리가 기대한 주문/금액과 일치하는지 먼저 확인한다.
+                PgResponseValidator.validate(paymentKey, response.orderId(), response.totalAmount(),
+                        expectedPgOrderId, expectedAmount);
+            }
             LocalDateTime approvedAt = success
                     ? OffsetDateTime.parse(response.approvedAt()).toLocalDateTime()
                     : LocalDateTime.now();

@@ -6,6 +6,8 @@ import com.programmers.kdt.payment.client.pg.PgCancelCommand;
 import com.programmers.kdt.payment.client.pg.PgCancelResult;
 import com.programmers.kdt.payment.client.pg.PgClient;
 import com.programmers.kdt.payment.client.pg.PgClientException;
+import com.programmers.kdt.payment.client.pg.PgIdempotencyKeys;
+import com.programmers.kdt.payment.client.pg.PgResponseMismatchException;
 import com.programmers.kdt.payment.entity.Payment;
 import com.programmers.kdt.payment.entity.PaymentStatus;
 import com.programmers.kdt.payment.exception.PointErrorCode;
@@ -66,12 +68,22 @@ public class PaymentReconciliationScheduler {
     }
 
     private boolean reconcilePayment(Payment payment) {
+        Long usedPoint = resolvedUsedPoint(PointEventIds.useEventId(payment.getOrderId(), payment.getAttemptSeq()));
+        Long expectedAmount = payment.getAmount() - usedPoint;
+
         PgOutcome outcome;
         try {
-            PgApproveResult result = pgClient.select(payment.getPaymentKey());
+            PgApproveResult result = pgClient.select(payment.getPaymentKey(), payment.getPgOrderId(), expectedAmount);
             outcome = result.success() ? PgOutcome.SUCCESS : PgOutcome.EXPLICIT_FAIL;
         } catch (PgClientException e) {
             outcome = PgOutcome.EXPLICIT_FAIL;
+        } catch (PgResponseMismatchException e) {
+            // PG는 "성공"이라 답했는데 내용이 안 맞음 - 그대로 확정지으면 위험하니 재조회 실패와 동일하게
+            // AMBIGUOUS로 다뤄서 재시도/give-up 경로를 그대로 타게 하되, 발생 즉시 눈에 띄게 기록해둔다.
+            log.error("[PG_RESPONSE_MISMATCH] 재조회 응답이 기대값과 다름 - paymentId={}, orderId={}", payment.getId(), payment.getOrderId(), e);
+            reconciliationTaskWriter.record(ReconciliationTaskType.PG_RESPONSE_MISMATCH, payment.getId(),
+                    "orderId=" + payment.getOrderId() + ", " + e.getMessage());
+            outcome = PgOutcome.AMBIGUOUS;
         } catch (RestClientException e) {
             outcome = PgOutcome.AMBIGUOUS;
         }
@@ -113,8 +125,8 @@ public class PaymentReconciliationScheduler {
     private void attemptGiveUpCancel(Payment payment, Long usedPoint) {
         Long cancelAmount = payment.getAmount() - usedPoint;
         try {
-            PgCancelResult result = pgClient.cancel(
-                    new PgCancelCommand(payment.getPaymentKey(), cancelAmount, "CONFIRM_TIMEOUT_GIVE_UP"));
+            PgCancelResult result = pgClient.cancel(new PgCancelCommand(payment.getPaymentKey(), cancelAmount,
+                    "CONFIRM_TIMEOUT_GIVE_UP", PgIdempotencyKeys.cancelKey(payment.getId())));
             if (!result.success()) {
                 recordCancelUncertain(payment, "PG 취소 응답 success=false");
             }

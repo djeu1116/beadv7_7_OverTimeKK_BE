@@ -298,7 +298,8 @@ public class PaymentServiceImpl implements PaymentService{
         if (!alreadyFailed) {
             if (payment.getPaymentKey() != null) {
                 callPg("토스 결제 취소", paymentId,
-                        () -> pgClient.cancel(new PgCancelCommand(payment.getPaymentKey(), payment.getAmount(), request.reason())));
+                        () -> pgClient.cancel(new PgCancelCommand(payment.getPaymentKey(), payment.getAmount(),
+                                request.reason(), PgIdempotencyKeys.cancelKey(payment.getId()))));
             }
 
             paymentAttemptRepository.findByPaymentIdAndAttemptSeq(payment.getId(), payment.getAttemptSeq())
@@ -436,7 +437,8 @@ public class PaymentServiceImpl implements PaymentService{
         Long usedPoint = getUsedPointForOrder(payment);
         Long pgPaidAmount = payment.getAmount() - usedPoint;
         Long refundAmount = RefundPolicy.calculateRefundAmount(pgPaidAmount, refundRate);
-        PgCancelResult cancelResult = pgClient.cancel(new PgCancelCommand(payment.getPaymentKey(), refundAmount, reason));
+        PgCancelResult cancelResult = pgClient.cancel(new PgCancelCommand(payment.getPaymentKey(), refundAmount, reason,
+                PgIdempotencyKeys.cancelKey(payment.getId())));
 
         if (!cancelResult.success()) {
             return false;

@@ -4,6 +4,7 @@ public record TossConfirmResponse(
         String paymentKey,
         String orderId,
         String status,
-        String approvedAt
+        String approvedAt,
+        Long totalAmount
 ) {
 }

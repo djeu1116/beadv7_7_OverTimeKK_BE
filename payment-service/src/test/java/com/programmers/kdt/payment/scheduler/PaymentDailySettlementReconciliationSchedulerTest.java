@@ -5,13 +5,17 @@ import com.programmers.kdt.common.reconciliation.ReconciliationTaskWriter;
 import com.programmers.kdt.payment.client.pg.PgApproveResult;
 import com.programmers.kdt.payment.client.pg.PgClient;
 import com.programmers.kdt.payment.client.pg.PgClientException;
+import com.programmers.kdt.payment.client.pg.PgResponseMismatchException;
 import com.programmers.kdt.payment.entity.Payment;
+import com.programmers.kdt.payment.entity.PaymentAttempt;
 import com.programmers.kdt.payment.entity.PaymentStatus;
+import com.programmers.kdt.payment.repository.PaymentAttemptRepository;
 import com.programmers.kdt.payment.repository.PaymentRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
@@ -21,7 +25,9 @@ import org.springframework.web.client.RestClientException;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -29,6 +35,8 @@ class PaymentDailySettlementReconciliationSchedulerTest {
 
     @Mock
     private PaymentRepository paymentRepository;
+    @Mock
+    private PaymentAttemptRepository paymentAttemptRepository;
     @Mock
     private PgClient pgClient;
     @Mock
@@ -38,7 +46,12 @@ class PaymentDailySettlementReconciliationSchedulerTest {
 
     @BeforeEach
     void setUp() {
-        scheduler = new PaymentDailySettlementReconciliationScheduler(paymentRepository, pgClient, reconciliationTaskWriter);
+        scheduler = new PaymentDailySettlementReconciliationScheduler(
+                paymentRepository, paymentAttemptRepository, pgClient, reconciliationTaskWriter);
+        // 대부분의 테스트는 정확한 사용 포인트 값에 관심이 없으니 usedPoint=0인 attempt를 기본으로 깔아둔다.
+        // 필요한 테스트만 따로 재스텁한다.
+        lenient().when(paymentAttemptRepository.findByPaymentIdAndAttemptSeq(any(), anyInt()))
+                .thenReturn(Optional.of(PaymentAttempt.create(1L, 0, "PG_ORDER", 0L)));
     }
 
     private Payment payment(Long id, PaymentStatus status, String paymentKey) {
@@ -69,7 +82,7 @@ class PaymentDailySettlementReconciliationSchedulerTest {
     void paidButPgSaysNotCharged_recordsMismatch() {
         Payment payment = payment(1L, PaymentStatus.PAID, "PG_KEY_1");
         stubTarget(payment);
-        when(pgClient.select("PG_KEY_1")).thenReturn(new PgApproveResult(false, null));
+        when(pgClient.select(eq("PG_KEY_1"), any(), any())).thenReturn(new PgApproveResult(false, null));
 
         scheduler.reconcileDailySettlement();
 
@@ -82,7 +95,7 @@ class PaymentDailySettlementReconciliationSchedulerTest {
     void paidAndPgAgrees_noMismatch() {
         Payment payment = payment(2L, PaymentStatus.PAID, "PG_KEY_2");
         stubTarget(payment);
-        when(pgClient.select("PG_KEY_2")).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
+        when(pgClient.select(eq("PG_KEY_2"), any(), any())).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
 
         scheduler.reconcileDailySettlement();
 
@@ -94,7 +107,7 @@ class PaymentDailySettlementReconciliationSchedulerTest {
     void failedButPgSaysCharged_recordsMismatch() {
         Payment payment = payment(3L, PaymentStatus.FAILED, "PG_KEY_3");
         stubTarget(payment);
-        when(pgClient.select("PG_KEY_3")).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
+        when(pgClient.select(eq("PG_KEY_3"), any(), any())).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
 
         scheduler.reconcileDailySettlement();
 
@@ -107,7 +120,7 @@ class PaymentDailySettlementReconciliationSchedulerTest {
     void cancelledAndPgAgrees_noMismatch() {
         Payment payment = payment(4L, PaymentStatus.CANCELLED, "PG_KEY_4");
         stubTarget(payment);
-        when(pgClient.select("PG_KEY_4")).thenReturn(new PgApproveResult(false, null));
+        when(pgClient.select(eq("PG_KEY_4"), any(), any())).thenReturn(new PgApproveResult(false, null));
 
         scheduler.reconcileDailySettlement();
 
@@ -130,7 +143,7 @@ class PaymentDailySettlementReconciliationSchedulerTest {
     void selectThrowsPgClientException_skipsWithoutRecording() {
         Payment payment = payment(6L, PaymentStatus.PAID, "PG_KEY_6");
         stubTarget(payment);
-        when(pgClient.select("PG_KEY_6")).thenThrow(new PgClientException("NOT_FOUND", "결제가 존재하지 않음"));
+        when(pgClient.select(eq("PG_KEY_6"), any(), any())).thenThrow(new PgClientException("NOT_FOUND", "결제가 존재하지 않음"));
 
         scheduler.reconcileDailySettlement();
 
@@ -142,7 +155,7 @@ class PaymentDailySettlementReconciliationSchedulerTest {
     void selectThrowsRestClientException_skipsWithoutRecording() {
         Payment payment = payment(7L, PaymentStatus.PAID, "PG_KEY_7");
         stubTarget(payment);
-        when(pgClient.select("PG_KEY_7")).thenThrow(new RestClientException("timeout"));
+        when(pgClient.select(eq("PG_KEY_7"), any(), any())).thenThrow(new RestClientException("timeout"));
 
         scheduler.reconcileDailySettlement();
 
@@ -155,8 +168,8 @@ class PaymentDailySettlementReconciliationSchedulerTest {
         Payment broken = payment(8L, PaymentStatus.PAID, "PG_KEY_8");
         Payment healthy = payment(9L, PaymentStatus.PAID, "PG_KEY_9");
         stubTarget(broken, healthy);
-        when(pgClient.select("PG_KEY_8")).thenThrow(new RuntimeException("예상치 못한 오류"));
-        when(pgClient.select("PG_KEY_9")).thenReturn(new PgApproveResult(false, null));
+        when(pgClient.select(eq("PG_KEY_8"), any(), any())).thenThrow(new RuntimeException("예상치 못한 오류"));
+        when(pgClient.select(eq("PG_KEY_9"), any(), any())).thenReturn(new PgApproveResult(false, null));
 
         scheduler.reconcileDailySettlement();
 
@@ -177,8 +190,8 @@ class PaymentDailySettlementReconciliationSchedulerTest {
                 .thenReturn(page0);
         when(paymentRepository.findByPaymentStatusInAndModifiedAtAfter(any(), any(), argThat(p -> p != null && p.getPageNumber() == 1)))
                 .thenReturn(page1);
-        when(pgClient.select("PG_KEY_10")).thenReturn(new PgApproveResult(false, null));
-        when(pgClient.select("PG_KEY_11")).thenReturn(new PgApproveResult(false, null));
+        when(pgClient.select(eq("PG_KEY_10"), any(), any())).thenReturn(new PgApproveResult(false, null));
+        when(pgClient.select(eq("PG_KEY_11"), any(), any())).thenReturn(new PgApproveResult(false, null));
 
         scheduler.reconcileDailySettlement();
 
@@ -198,5 +211,48 @@ class PaymentDailySettlementReconciliationSchedulerTest {
 
         verify(reconciliationTaskWriter)
                 .record(eq(ReconciliationTaskType.DAILY_SETTLEMENT_MISMATCH), eq(0L), anyString());
+    }
+
+    @Test
+    @DisplayName("attempt 이력이 없으면 기대 금액을 못 구하니 PG 조회 자체를 건너뛴다.")
+    void noAttempt_skipsPgCall() {
+        Payment payment = payment(12L, PaymentStatus.PAID, "PG_KEY_12");
+        stubTarget(payment);
+        when(paymentAttemptRepository.findByPaymentIdAndAttemptSeq(any(), anyInt())).thenReturn(Optional.empty());
+
+        scheduler.reconcileDailySettlement();
+
+        verifyNoInteractions(pgClient, reconciliationTaskWriter);
+    }
+
+    @Test
+    @DisplayName("select() 호출 시 기대 orderId는 payment의 pgOrderId, 기대 금액은 attempt에 남은 사용 포인트를 뺀 값이다.")
+    void select_usesExpectedOrderIdAndAmount() {
+        Payment payment = payment(13L, PaymentStatus.PAID, "PG_KEY_13"); // amount=10000
+        ReflectionTestUtils.setField(payment, "pgOrderId", "PG_ORDER_13");
+        stubTarget(payment);
+        when(paymentAttemptRepository.findByPaymentIdAndAttemptSeq(13L, 0))
+                .thenReturn(Optional.of(PaymentAttempt.create(13L, 0, "PG_ORDER_13", 3000L)));
+        when(pgClient.select(eq("PG_KEY_13"), any(), any())).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
+
+        scheduler.reconcileDailySettlement();
+
+        ArgumentCaptor<Long> amountCaptor = ArgumentCaptor.forClass(Long.class);
+        verify(pgClient).select(eq("PG_KEY_13"), eq("PG_ORDER_13"), amountCaptor.capture());
+        assertThat(amountCaptor.getValue()).isEqualTo(7000L);
+    }
+
+    @Test
+    @DisplayName("PG가 성공(DONE)이라 답했는데 orderId/금액이 기대값과 다르면(PgResponseMismatchException) 그 자체를 불일치로 기록한다.")
+    void selectThrowsResponseMismatch_recordsMismatch() {
+        Payment payment = payment(14L, PaymentStatus.PAID, "PG_KEY_14");
+        stubTarget(payment);
+        when(pgClient.select(eq("PG_KEY_14"), any(), any()))
+                .thenThrow(new PgResponseMismatchException("PG_KEY_14", "EXPECTED_ORDER", 10000L, "OTHER_ORDER", 10000L));
+
+        scheduler.reconcileDailySettlement();
+
+        verify(reconciliationTaskWriter)
+                .record(eq(ReconciliationTaskType.DAILY_SETTLEMENT_MISMATCH), eq(14L), anyString());
     }
 }

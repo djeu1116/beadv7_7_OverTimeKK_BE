@@ -7,6 +7,7 @@ import com.programmers.kdt.payment.client.pg.PgCancelCommand;
 import com.programmers.kdt.payment.client.pg.PgCancelResult;
 import com.programmers.kdt.payment.client.pg.PgClient;
 import com.programmers.kdt.payment.client.pg.PgClientException;
+import com.programmers.kdt.payment.client.pg.PgResponseMismatchException;
 import com.programmers.kdt.payment.entity.Payment;
 import com.programmers.kdt.payment.entity.PaymentStatus;
 import com.programmers.kdt.payment.exception.PaymentErrorCode;
@@ -83,13 +84,14 @@ class PaymentReconciliationSchedulerTest {
     void success_confirmAndPublishes() {
         Payment payment = pendingPayment(1L, LocalDateTime.now());
         stubPending(payment);
-        when(pgClient.select("PG_KEY_1")).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
+        when(pgClient.select(eq("PG_KEY_1"), any(), any())).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
         when(paymentTxOps.applyReconcileResult(1L, PgOutcome.SUCCESS)).thenReturn(payment);
 
         scheduler.reconcilePayments();
 
         verify(paymentTxOps).applyReconcileResult(1L, PgOutcome.SUCCESS);
-        verifyNoInteractions(pointService);
+        // select() 기대 금액을 만들기 위해 findUsedAmount는 호출되지만(사용 포인트 조회), 롤백은 안 한다.
+        verify(pointService, never()).rollbackPoint(any(), any(), any(), anyBoolean());
     }
 
     @Test
@@ -97,7 +99,7 @@ class PaymentReconciliationSchedulerTest {
     void fail_confirmAndPublishes() {
         Payment payment = pendingPayment(2L, LocalDateTime.now());
         stubPending(payment);
-        when(pgClient.select("PG_KEY_2")).thenReturn(new PgApproveResult(false,
+        when(pgClient.select(eq("PG_KEY_2"), any(), any())).thenReturn(new PgApproveResult(false,
                 null));
         when(paymentTxOps.applyReconcileResult(2L,
                 PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
@@ -115,7 +117,7 @@ class PaymentReconciliationSchedulerTest {
     void explicitFailByException() {
         Payment payment = pendingPayment(3L, LocalDateTime.now());
         stubPending(payment);
-        when(pgClient.select("PG_KEY_3")).thenThrow(new PgClientException("NOT_FOUND", "결제가 존재하지 않음"));
+        when(pgClient.select(eq("PG_KEY_3"), any(), any())).thenThrow(new PgClientException("NOT_FOUND", "결제가 존재하지 않음"));
         when(paymentTxOps.applyReconcileResult(3L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
         when(pointService.findUsedAmount(anyString())).thenReturn(0L);
 
@@ -130,7 +132,7 @@ class PaymentReconciliationSchedulerTest {
     void findUsedAmountNull_treatedZero() {
         Payment payment = pendingPayment(10L, LocalDateTime.now());
         stubPending(payment);
-        when(pgClient.select("PG_KEY_10")).thenReturn(new PgApproveResult(false, null));
+        when(pgClient.select(eq("PG_KEY_10"), any(), any())).thenReturn(new PgApproveResult(false, null));
         when(paymentTxOps.applyReconcileResult(10L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
         when(pointService.findUsedAmount(anyString())).thenReturn(null);
 
@@ -144,7 +146,7 @@ class PaymentReconciliationSchedulerTest {
     void overThreshold_givesUpAndFails() {
         Payment payment = pendingPayment(5L, LocalDateTime.now().minusMinutes(10).minusSeconds(5));
         stubPending(payment);
-        when(pgClient.select("PG_KEY_5")).thenThrow(new RestClientException("timeout"));
+        when(pgClient.select(eq("PG_KEY_5"), any(), any())).thenThrow(new RestClientException("timeout"));
         when(pgClient.cancel(any())).thenReturn(new PgCancelResult(true, LocalDateTime.now()));
         when(paymentTxOps.applyReconcileResult(5L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
         when(pointService.findUsedAmount(anyString())).thenReturn(0L);
@@ -162,7 +164,7 @@ class PaymentReconciliationSchedulerTest {
     void giveUp_cancelRequestFails_recordsCancelUncertain() {
         Payment payment = pendingPayment(8L, LocalDateTime.now().minusMinutes(10).minusSeconds(5));
         stubPending(payment);
-        when(pgClient.select("PG_KEY_8")).thenThrow(new RestClientException("timeout"));
+        when(pgClient.select(eq("PG_KEY_8"), any(), any())).thenThrow(new RestClientException("timeout"));
         when(pgClient.cancel(any())).thenThrow(new RestClientException("cancel timeout"));
         when(paymentTxOps.applyReconcileResult(8L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
         when(pointService.findUsedAmount(anyString())).thenReturn(0L);
@@ -179,7 +181,7 @@ class PaymentReconciliationSchedulerTest {
     void giveUp_cancelReturnsFalse_recordsCancelUncertain() {
         Payment payment = pendingPayment(9L, LocalDateTime.now().minusMinutes(10).minusSeconds(5));
         stubPending(payment);
-        when(pgClient.select("PG_KEY_9")).thenThrow(new RestClientException("timeout"));
+        when(pgClient.select(eq("PG_KEY_9"), any(), any())).thenThrow(new RestClientException("timeout"));
         when(pgClient.cancel(any())).thenReturn(new PgCancelResult(false, null));
         when(paymentTxOps.applyReconcileResult(9L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
         when(pointService.findUsedAmount(anyString())).thenReturn(0L);
@@ -195,7 +197,7 @@ class PaymentReconciliationSchedulerTest {
     void giveUp_cancelRejectedByPg_doesNotRecordCancelUncertain() {
         Payment payment = pendingPayment(11L, LocalDateTime.now().minusMinutes(10).minusSeconds(5));
         stubPending(payment);
-        when(pgClient.select("PG_KEY_11")).thenThrow(new RestClientException("timeout"));
+        when(pgClient.select(eq("PG_KEY_11"), any(), any())).thenThrow(new RestClientException("timeout"));
         when(pgClient.cancel(any())).thenThrow(new PgClientException("NOT_FOUND", "결제가 존재하지 않음"));
         when(paymentTxOps.applyReconcileResult(11L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
         when(pointService.findUsedAmount(anyString())).thenReturn(0L);
@@ -212,7 +214,7 @@ class PaymentReconciliationSchedulerTest {
     void giveUp_cancelAmountExcludesUsedPoint() {
         Payment payment = pendingPayment(12L, LocalDateTime.now().minusMinutes(10).minusSeconds(5)); // amount=10000
         stubPending(payment);
-        when(pgClient.select("PG_KEY_12")).thenThrow(new RestClientException("timeout"));
+        when(pgClient.select(eq("PG_KEY_12"), any(), any())).thenThrow(new RestClientException("timeout"));
         when(pgClient.cancel(any())).thenReturn(new PgCancelResult(true, LocalDateTime.now()));
         when(paymentTxOps.applyReconcileResult(12L, PgOutcome.EXPLICIT_FAIL)).thenReturn(payment);
         when(pointService.findUsedAmount(anyString())).thenReturn(3000L);
@@ -225,18 +227,49 @@ class PaymentReconciliationSchedulerTest {
     }
 
     @Test
+    @DisplayName("select() 호출 시 기대 금액은 결제 금액에서 사용 포인트를 뺀 값이다.")
+    void select_usesExpectedAmountExcludingUsedPoint() {
+        Payment payment = pendingPayment(21L, LocalDateTime.now()); // amount=10000
+        stubPending(payment);
+        when(pointService.findUsedAmount(anyString())).thenReturn(4000L);
+        when(pgClient.select(eq("PG_KEY_21"), any(), any())).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
+        when(paymentTxOps.applyReconcileResult(21L, PgOutcome.SUCCESS)).thenReturn(payment);
+
+        scheduler.reconcilePayments();
+
+        ArgumentCaptor<Long> amountCaptor = ArgumentCaptor.forClass(Long.class);
+        verify(pgClient).select(eq("PG_KEY_21"), any(), amountCaptor.capture());
+        assertThat(amountCaptor.getValue()).isEqualTo(6000L);
+    }
+
+    @Test
+    @DisplayName("PG가 성공(DONE)이라 응답했는데 orderId/금액이 기대값과 다르면(PgResponseMismatchException) 즉시 PG_RESPONSE_MISMATCH로 기록하고, 아직 임계값 전이면 강제 확정은 안 한다.")
+    void responseMismatch_recordsMismatchAndTreatsAsAmbiguous() {
+        Payment payment = pendingPayment(20L, LocalDateTime.now());
+        stubPending(payment);
+        when(pgClient.select(eq("PG_KEY_20"), any(), any()))
+                .thenThrow(new PgResponseMismatchException("PG_KEY_20", "EXPECTED", 10000L, "OTHER", 10000L));
+
+        scheduler.reconcilePayments();
+
+        verify(reconciliationTaskWriter)
+                .record(eq(ReconciliationTaskType.PG_RESPONSE_MISMATCH), eq(20L), anyString());
+        verifyNoInteractions(paymentTxOps);
+    }
+
+    @Test
     @DisplayName("한 건에서 동시성 충돌(BusinessException)이 발생해도 나머지 결제는 계속 처리된다.")
     void concurrentModificationOnOnePayment_doesNotStopBatch() {
         Payment conflicted = pendingPayment(6L, LocalDateTime.now());
         Payment healthy = pendingPayment(7L, LocalDateTime.now());
         stubPending(conflicted, healthy);
 
-        when(pgClient.select("PG_KEY_6")).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
+        when(pgClient.select(eq("PG_KEY_6"), any(), any())).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
         when(paymentTxOps.applyReconcileResult(6L, PgOutcome.SUCCESS))
                 .thenThrow(new com.programmers.kdt.common.exception.BusinessException(
                         PaymentErrorCode.PAYMENT_CONCURRENT_MODIFICATION));
 
-        when(pgClient.select("PG_KEY_7")).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
+        when(pgClient.select(eq("PG_KEY_7"), any(), any())).thenReturn(new PgApproveResult(true, LocalDateTime.now()));
         when(paymentTxOps.applyReconcileResult(7L, PgOutcome.SUCCESS)).thenReturn(healthy);
 
         scheduler.reconcilePayments();

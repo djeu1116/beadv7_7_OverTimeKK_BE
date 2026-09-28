@@ -76,8 +76,10 @@ public class MockPgClient implements PgClient {
         return new PgCancelResult(true, LocalDateTime.now());
     }
 
+    // Mock은 expectedPgOrderId/expectedAmount를 검증하지 않는다 - 스텁이 반환할 값 자체를 테스트가
+    // 전적으로 통제하므로, 불일치 시나리오를 재현하고 싶으면 stubSelect로 원하는 결과를 직접 넣으면 된다.
     @Override
-    public PgApproveResult select(String paymentKey) {
+    public PgApproveResult select(String paymentKey, String expectedPgOrderId, Long expectedAmount) {
         return resolve(selectBehaviors, paymentKey);
     }
 
