@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisStringCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -126,6 +127,18 @@ class IdempotencyKeyServiceImplTest {
                     .extracting(e -> ((BusinessException) e).getErrorCode())
                     .isEqualTo(PaymentErrorCode.PAYMENT_ALREADY_EXISTS);
         }
+
+        @Test
+        @DisplayName("Redis 장애(DataAccessException) 시 예외를 막지 않고 빈 값으로 degrade한다 - 결제 자체는 막지 않음.")
+        void redisDown_degradesToEmpty() {
+            when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+            when(valueOperations.setIfAbsent(eq("key-1"), anyString(), any(Duration.class)))
+                    .thenThrow(new RedisConnectionFailureException("connection refused"));
+
+            Optional<String> result = idempotencyKeyService.generate("key-1", "hash-1");
+
+            assertThat(result).isEmpty();
+        }
     }
 
     @Nested
@@ -160,6 +173,16 @@ class IdempotencyKeyServiceImplTest {
             assertThatCode(() -> idempotencyKeyService.complete("key-1", "{}"))
                     .doesNotThrowAnyException();
         }
+
+        @Test
+        @DisplayName("Redis 장애가 나도 예외를 밖으로 던지지 않는다 - 캐시를 못 남길 뿐 결제 자체는 이미 끝난 뒤라 문제 없음.")
+        void redisDown_doesNotThrow() {
+            when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+            when(valueOperations.get("key-1")).thenThrow(new RedisConnectionFailureException("connection refused"));
+
+            assertThatCode(() -> idempotencyKeyService.complete("key-1", "{}"))
+                    .doesNotThrowAnyException();
+        }
     }
 
     @Nested
@@ -171,6 +194,15 @@ class IdempotencyKeyServiceImplTest {
             idempotencyKeyService.release("key-1");
 
             verify(redisTemplate).delete("key-1");
+        }
+
+        @Test
+        @DisplayName("Redis 장애가 나도 예외를 밖으로 던지지 않는다 - TTL로 자연 소멸하므로 안전.")
+        void redisDown_doesNotThrow() {
+            doThrow(new RedisConnectionFailureException("connection refused")).when(redisTemplate).delete("key-1");
+
+            assertThatCode(() -> idempotencyKeyService.release("key-1"))
+                    .doesNotThrowAnyException();
         }
     }
 }
