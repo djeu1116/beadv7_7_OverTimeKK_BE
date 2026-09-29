@@ -117,7 +117,9 @@ beadv7_7_OverTimeKK_BE/
 ├── observability/          # 모니터링/관측성 설정
 ├── local/                  # 로컬 개발 환경 설정
 ├── Dockerfile
-├── init-databases.sql
+├── init-databases.sql      # performance-service, user-service용(reseat 스키마)
+├── init-order.sql          # order-service 전용 MySQL 인스턴스용
+├── init-payment.sql        # payment-service 전용 MySQL 인스턴스용
 ├── run_local.sh
 └── build.gradle
 ```
@@ -135,7 +137,7 @@ cd beadv7_7_OverTimeKK_BE
 ./run_local.sh
 ```
 
-> DB 초기화가 필요한 경우 `init-databases.sql`을 참고해 로컬 MySQL에 스키마를 생성해주세요.
+> DB 초기화가 필요한 경우 `init-databases.sql`(performance/user), `init-order.sql`(order), `init-payment.sql`(payment)을 참고해 로컬 MySQL에 스키마를 생성해주세요 - order/payment는 별도 MySQL 인스턴스를 씁니다(`local/compose.yaml` 참고).
 > 서비스별 상세 설정(포트, 환경변수 등)은 각 서비스 디렉터리(`gateway-service`, `user-service`, `order-service`, `performance-service`)의 설정 파일을 참고해주세요.
 
 ---

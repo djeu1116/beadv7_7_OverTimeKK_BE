@@ -119,7 +119,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "deploy/docker-compose.deploy.yml,deploy/nginx,init-databases.sql,.env,observability/promtail"
+          source: "deploy/docker-compose.deploy.yml,deploy/nginx,init-databases.sql,init-order.sql,init-payment.sql,.env,observability/promtail"
           target: "/home/ubuntu/reseat-deploy"
           overwrite: true
 
