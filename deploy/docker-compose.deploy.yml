@@ -3,8 +3,9 @@
 # init-databases.sql / observability는 로컬 dev(compose.yaml, observability-compose.yaml)와 공유하므로 이 폴더로 옮기지 않고 ../로 참조함.
 
 services:
-  # performance-service, user-service 전용(reseat 스키마). order/payment는 DB 물리 분리 2단계로
-  # db-order/db-payment 별도 컨테이너로 승격됨 - 상세: Obsidian db_separation_plan.md
+  # performance-service(reseat_performance), user-service(reseat_user) 전용 - 같은 인스턴스,
+  # 스키마만 분리(3단계). order/payment는 DB 물리 분리 2단계로 db-order/db-payment 별도 컨테이너로
+  # 이미 승격됨 - 상세: Obsidian db_separation_plan.md
   db:
     image: mysql:8.4
     container_name: reseat-mysql
@@ -163,9 +164,10 @@ services:
         condition: service_healthy
     environment:
       TZ: Asia/Seoul
-      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/reseat
-      SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      # DB 물리 분리 3단계 - user-service 전용 스키마/계정 (init-databases.sql이 만듦)
+      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/reseat_user?useSSL=false&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: user_service
+      SPRING_DATASOURCE_PASSWORD: ${USER_DB_PASSWORD}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       SPRING_JPA_SHOW_SQL: "false"
@@ -273,12 +275,13 @@ services:
         condition: service_healthy
     environment:
       TZ: Asia/Seoul
-      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/reseat?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_0900_ai_ci&serverTimezone=Asia/Seoul
+      # DB 물리 분리 3단계 - performance-service 전용 스키마/계정 (init-databases.sql이 만듦)
+      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/reseat_performance?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_0900_ai_ci&serverTimezone=Asia/Seoul&useSSL=false&allowPublicKeyRetrieval=true
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       SPRING_ELASTICSEARCH_URIS: http://elasticsearch:9200
-      SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      SPRING_DATASOURCE_USERNAME: performance_service
+      SPRING_DATASOURCE_PASSWORD: ${PERFORMANCE_DB_PASSWORD}
       ORDER_SERVICE_URL: http://order-service:8082
       USER_SERVICE_URL: http://user-service:8081
       SPRING_JPA_SHOW_SQL: "false"

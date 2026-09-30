@@ -1,6 +1,7 @@
 services:
-  # performance-service, user-service 전용(reseat 스키마). order/payment는 DB 물리 분리 2단계로
-  # 아래 mysql-order/mysql-payment 별도 인스턴스로 승격됨 - 상세: Obsidian db_separation_plan.md
+  # performance-service(reseat_performance), user-service(reseat_user) 전용 - 같은 인스턴스,
+  # 스키마만 분리(3단계). order/payment는 DB 물리 분리 2단계로 아래 mysql-order/mysql-payment
+  # 별도 인스턴스로 이미 승격됨 - 상세: Obsidian db_separation_plan.md
   mysql:
     image: mysql:8.4
     container_name: kdt-mysql

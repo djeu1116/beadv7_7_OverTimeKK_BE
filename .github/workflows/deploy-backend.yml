@@ -102,6 +102,8 @@ jobs:
           INTERNAL_AUTH_TOKEN=${{ secrets.INTERNAL_AUTH_TOKEN }}
           ORDER_DB_PASSWORD=${{ secrets.ORDER_DB_PASSWORD }}
           PAYMENT_DB_PASSWORD=${{ secrets.PAYMENT_DB_PASSWORD }}
+          PERFORMANCE_DB_PASSWORD=${{ secrets.PERFORMANCE_DB_PASSWORD }}
+          USER_DB_PASSWORD=${{ secrets.USER_DB_PASSWORD }}
           TOSS_SECRET_KEY=${{ secrets.TOSS_SECRET_KEY }}
           TOSS_CLIENT_KEY=${{ secrets.TOSS_CLIENT_KEY }}
           JWT_SECRET=${{ secrets.JWT_SECRET }}

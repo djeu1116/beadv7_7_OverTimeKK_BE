@@ -117,7 +117,7 @@ beadv7_7_OverTimeKK_BE/
 ├── observability/          # 모니터링/관측성 설정
 ├── local/                  # 로컬 개발 환경 설정
 ├── Dockerfile
-├── init-databases.sql      # performance-service, user-service용(reseat 스키마)
+├── init-databases.sql      # performance-service(reseat_performance), user-service(reseat_user) - 같은 인스턴스, 스키마만 분리
 ├── init-order.sql          # order-service 전용 MySQL 인스턴스용
 ├── init-payment.sql        # payment-service 전용 MySQL 인스턴스용
 ├── run_local.sh

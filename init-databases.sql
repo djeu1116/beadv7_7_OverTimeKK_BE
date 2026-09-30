@@ -1,14 +1,16 @@
 -- ============================================================
--- DB 물리 분리 - reseat(performance-service, user-service 소유, 아직 미분리)
--- order-service/payment-service는 2단계(별도 인스턴스 승격)로 init-order.sql/init-payment.sql로 분리됨.
+-- DB 물리 분리 3단계 (2026-09-30): reseat 하나를 reseat_performance/reseat_user로 분리
+-- (order/payment는 이미 1~2단계로 별도 인스턴스까지 분리됨 - init-order.sql/init-payment.sql 참고)
+-- 같은 인스턴스 안에서 스키마만 분리(1단계와 같은 절차). 인스턴스 승격은 4단계.
+-- 죽은 테이블(idempotency_key, settlements, settlement_details, settlement_policy)은
+-- 매핑 엔티티도 없고 데이터도 0행이라 이관하지 않고 드롭함.
 -- 상세: Obsidian programmers/payment_order_split/db_separation_plan.md
 -- ============================================================
 
 
-
--- performance-service, user-service 소유 (미분리 - 계속 root 계정 공유)
-CREATE DATABASE IF NOT EXISTS reseat CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-ALTER DATABASE reseat CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+-- performance-service 소유
+CREATE DATABASE IF NOT EXISTS reseat_performance CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+ALTER DATABASE reseat_performance CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 SET NAMES utf8mb4;
 
@@ -22,30 +24,8 @@ SET NAMES utf8mb4;
 /*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
 /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
-USE reseat;
+USE reseat_performance;
 
-DROP TABLE IF EXISTS `app_user`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `app_user` (
-  `email_verified` bit(1) NOT NULL,
-  `created_at` datetime(6) NOT NULL,
-  `modified_at` datetime(6) NOT NULL,
-  `user_id` bigint NOT NULL AUTO_INCREMENT,
-  `business_name` varchar(255) DEFAULT NULL,
-  `business_number` varchar(255) DEFAULT NULL,
-  `email` varchar(255) DEFAULT NULL,
-  `password` varchar(255) DEFAULT NULL,
-  `settlement_account` varchar(255) DEFAULT NULL,
-  `username` varchar(255) DEFAULT NULL,
-  `status` enum('ACTIVE','DORMANT','WITHDRAWN') DEFAULT NULL,
-  `user_type` enum('BUSINESS','INDIVIDUAL') DEFAULT NULL,
-  PRIMARY KEY (`user_id`),
-  UNIQUE KEY `uk_app_user_username` (`username`),
-  UNIQUE KEY `uk_app_user_email` (`email`),
-  UNIQUE KEY `uk_app_user_business_number` (`business_number`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `hall`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
@@ -59,18 +39,6 @@ CREATE TABLE `hall` (
   PRIMARY KEY (`hall_id`),
   KEY `FKc2v4ktmjj4raseyspt17o075l` (`venue_id`),
   CONSTRAINT `FKc2v4ktmjj4raseyspt17o075l` FOREIGN KEY (`venue_id`) REFERENCES `venue` (`venue_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `idempotency_key`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `idempotency_key` (
-  `idempotency_key` varchar(300) NOT NULL,
-  `created_at` datetime(6) NOT NULL,
-  `expires_at` datetime(6) NOT NULL,
-  `request_hash` varchar(255) NOT NULL,
-  `response_body` longtext,
-  PRIMARY KEY (`idempotency_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `performance`;
@@ -136,54 +104,6 @@ CREATE TABLE `seat` (
   `zone` varchar(255) NOT NULL,
   PRIMARY KEY (`seat_id`),
   UNIQUE KEY `uk_seat` (`hall_id`,`zone`,`seat_row`,`seat_num`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `settlement_details`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `settlement_details` (
-  `settlement_detail_id` bigint NOT NULL AUTO_INCREMENT,
-  `created_at` datetime(6) NOT NULL,
-  `modified_at` datetime(6) NOT NULL,
-  `gross_amount` bigint NOT NULL,
-  `performance_id` bigint NOT NULL,
-  `pg_fee_amount` bigint NOT NULL,
-  `service_fee_amount` bigint NOT NULL,
-  `session_num` bigint NOT NULL,
-  `settlement_amount` bigint NOT NULL,
-  `settlement_id` bigint NOT NULL,
-  PRIMARY KEY (`settlement_detail_id`),
-  UNIQUE KEY `uk_settlement_detail_session` (`performance_id`,`session_num`),
-  KEY `FKp4mgppkq69u31oicxnkyijkag` (`settlement_id`),
-  CONSTRAINT `FKp4mgppkq69u31oicxnkyijkag` FOREIGN KEY (`settlement_id`) REFERENCES `settlements` (`settlement_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `settlement_policy`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `settlement_policy` (
-  `policy_id` bigint NOT NULL AUTO_INCREMENT,
-  PRIMARY KEY (`policy_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-DROP TABLE IF EXISTS `settlements`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `settlements` (
-  `settlement_id` bigint NOT NULL AUTO_INCREMENT,
-  `created_at` datetime(6) NOT NULL,
-  `modified_at` datetime(6) NOT NULL,
-  `gross_amount` bigint NOT NULL,
-  `paid_at` datetime(6) DEFAULT NULL,
-  `scheduled_settlement_date` date NOT NULL,
-  `seller_id` bigint NOT NULL,
-  `service_fee_amount` bigint NOT NULL,
-  `settlement_amount` bigint NOT NULL,
-  `settlement_month` date NOT NULL,
-  `settlement_status` enum('FAILED','PAID','PENDING') NOT NULL,
-  `pg_fee_amount` bigint NOT NULL,
-  PRIMARY KEY (`settlement_id`),
-  UNIQUE KEY `uk_settlement_seller_period` (`seller_id`,`settlement_month`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `standby`;
@@ -255,6 +175,27 @@ CREATE TABLE `venue` (
   PRIMARY KEY (`venue_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `reconciliation_task`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+-- common 모듈의 ReconciliationTask 엔티티가 모든 서비스에 컴포넌트/엔티티 스캔되어(각 서비스
+-- @SpringBootApplication의 베이스 패키지가 com.programmers.kdt로 common과 겹침) ddl-auto=validate가
+-- 이 테이블 존재를 요구한다 - performance-service 도메인 전용 ReconciliationTaskType은 아직 없어서
+-- 항상 빈 테이블이지만, 구조적으로 필요하다(order/payment의 공유 테이블 복제와 같은 이유).
+CREATE TABLE `reconciliation_task` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `task_type` varchar(50) NOT NULL,
+  `aggregate_id` bigint NOT NULL,
+  `amount` bigint DEFAULT NULL,
+  `detail` varchar(500) DEFAULT NULL,
+  `status` enum('OPEN','RESOLVED') NOT NULL DEFAULT 'OPEN',
+  `resolved_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_reconciliation_task_status_type` (`status`,`task_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
@@ -266,3 +207,84 @@ CREATE TABLE `venue` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
+-- DB 물리 분리 3단계: performance-service 전용 계정, 자기 스키마만 접근 가능.
+-- 비밀번호는 로컬/개발용 기본값 — 실제 배포 전에는 반드시 교체.
+CREATE USER IF NOT EXISTS 'performance_service'@'%' IDENTIFIED BY 'performance-service-dev-pw-change-me';
+GRANT ALL PRIVILEGES ON reseat_performance.* TO 'performance_service'@'%';
+FLUSH PRIVILEGES;
+
+
+-- user-service 소유
+CREATE DATABASE IF NOT EXISTS reseat_user CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+ALTER DATABASE reseat_user CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+
+SET NAMES utf8mb4;
+
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+/*!50503 SET NAMES utf8mb4 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40103 SET TIME_ZONE='+00:00' */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+USE reseat_user;
+
+DROP TABLE IF EXISTS `app_user`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `app_user` (
+  `email_verified` bit(1) NOT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  `user_id` bigint NOT NULL AUTO_INCREMENT,
+  `business_name` varchar(255) DEFAULT NULL,
+  `business_number` varchar(255) DEFAULT NULL,
+  `email` varchar(255) DEFAULT NULL,
+  `password` varchar(255) DEFAULT NULL,
+  `settlement_account` varchar(255) DEFAULT NULL,
+  `username` varchar(255) DEFAULT NULL,
+  `status` enum('ACTIVE','DORMANT','WITHDRAWN') DEFAULT NULL,
+  `user_type` enum('BUSINESS','INDIVIDUAL') DEFAULT NULL,
+  PRIMARY KEY (`user_id`),
+  UNIQUE KEY `uk_app_user_username` (`username`),
+  UNIQUE KEY `uk_app_user_email` (`email`),
+  UNIQUE KEY `uk_app_user_business_number` (`business_number`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `reconciliation_task`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+-- performance 섹션과 같은 이유(common 모듈 ReconciliationTask 엔티티가 전 서비스에 스캔됨) - 상세 주석 그쪽 참고.
+CREATE TABLE `reconciliation_task` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `task_type` varchar(50) NOT NULL,
+  `aggregate_id` bigint NOT NULL,
+  `amount` bigint DEFAULT NULL,
+  `detail` varchar(500) DEFAULT NULL,
+  `status` enum('OPEN','RESOLVED') NOT NULL DEFAULT 'OPEN',
+  `resolved_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `modified_at` datetime(6) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_reconciliation_task_status_type` (`status`,`task_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- DB 물리 분리 3단계: user-service 전용 계정, 자기 스키마만 접근 가능.
+-- 비밀번호는 로컬/개발용 기본값 — 실제 배포 전에는 반드시 교체.
+CREATE USER IF NOT EXISTS 'user_service'@'%' IDENTIFIED BY 'user-service-dev-pw-change-me';
+GRANT ALL PRIVILEGES ON reseat_user.* TO 'user_service'@'%';
+FLUSH PRIVILEGES;
