@@ -1,40 +1,9 @@
 # EC2 배포용 compose 파일. 로컬 개발용 compose.yaml과는 별개.
 # 실행 위치는 repo root(reseat-deploy) 기준: docker compose -f deploy/docker-compose.deploy.yml --env-file .env up -d
-# init-databases.sql / observability는 로컬 dev(compose.yaml, observability-compose.yaml)와 공유하므로 이 폴더로 옮기지 않고 ../로 참조함.
+# init-*.sql / observability는 로컬 dev(compose.yaml, observability-compose.yaml)와 공유하므로 이 폴더로 옮기지 않고 ../로 참조함.
 
 services:
-  # performance-service(reseat_performance), user-service(reseat_user) 전용 - 같은 인스턴스,
-  # 스키마만 분리(3단계). order/payment는 DB 물리 분리 2단계로 db-order/db-payment 별도 컨테이너로
-  # 이미 승격됨 - 상세: Obsidian db_separation_plan.md
-  db:
-    image: mysql:8.4
-    container_name: reseat-mysql
-    mem_limit: 1750m
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      TZ: Asia/Seoul
-    command:
-      - --default-time-zone=+09:00
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_0900_ai_ci
-      - --init-connect=SET NAMES utf8mb4
-    volumes:
-      - ../init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
-      - reseat-mysql-data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    restart: unless-stopped
-    networks:
-      - reseat-net
-    ports:
-      - "127.0.0.1:3306:3306"
-    # GUI로DB 확인 가능
-
-  # order-service 전용 MySQL 인스턴스(DB 물리 분리 2단계) - db와 완전히 별개 컨테이너라
+  # order-service 전용 MySQL 인스턴스(DB 물리 분리 2단계) - 다른 db-* 컨테이너와 완전히 별개라
   # 한쪽이 죽어도 다른 쪽 서비스에 영향 없음(장애 격리가 이 단계의 핵심).
   db-order:
     image: mysql:8.4
@@ -88,6 +57,61 @@ services:
     networks:
       - reseat-net
     # 호스트 포트 노출 없음 - payment-service만 내부 네트워크로 접근
+
+  # performance-service 전용 MySQL 인스턴스(DB 물리 분리 4단계) - 3단계까지는 db(reseat 공용
+  # 컨테이너)를 썼다가 이번에 완전히 별도 승격됨.
+  db-performance:
+    image: mysql:8.4
+    container_name: reseat-mysql-performance
+    mem_limit: 512m  # 추정치, 실측 후 조정 필요
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      TZ: Asia/Seoul
+    command:
+      - --default-time-zone=+09:00
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --init-connect=SET NAMES utf8mb4
+    volumes:
+      - ../init-performance.sql:/docker-entrypoint-initdb.d/init-performance.sql:ro
+      - reseat-mysql-performance-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - reseat-net
+    # 호스트 포트 노출 없음 - performance-service만 내부 네트워크로 접근
+
+  # user-service 전용 MySQL 인스턴스(DB 물리 분리 4단계).
+  db-user:
+    image: mysql:8.4
+    container_name: reseat-mysql-user
+    mem_limit: 512m  # 추정치, 실측 후 조정 필요
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      TZ: Asia/Seoul
+    command:
+      - --default-time-zone=+09:00
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --init-connect=SET NAMES utf8mb4
+    volumes:
+      - ../init-user.sql:/docker-entrypoint-initdb.d/init-user.sql:ro
+      - reseat-mysql-user-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - reseat-net
+    # 호스트 포트 노출 없음 - user-service만 내부 네트워크로 접근
 
   redis:
     image: redis:8
@@ -158,14 +182,14 @@ services:
     container_name: user-service
     mem_limit: 512m
     depends_on:
-      db:
+      db-user:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
       TZ: Asia/Seoul
-      # DB 물리 분리 3단계 - user-service 전용 스키마/계정 (init-databases.sql이 만듦)
-      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/reseat_user?useSSL=false&allowPublicKeyRetrieval=true
+      # DB 물리 분리 4단계 - user-service 전용 MySQL 인스턴스(init-user.sql이 만듦, db-order/db-payment/db-performance와 별개)
+      SPRING_DATASOURCE_URL: jdbc:mysql://db-user:3306/reseat_user?useSSL=false&allowPublicKeyRetrieval=true
       SPRING_DATASOURCE_USERNAME: user_service
       SPRING_DATASOURCE_PASSWORD: ${USER_DB_PASSWORD}
       SPRING_DATA_REDIS_HOST: redis
@@ -267,7 +291,7 @@ services:
     container_name: performance-service
     mem_limit: 1152m
     depends_on:
-      db:
+      db-performance:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -275,8 +299,8 @@ services:
         condition: service_healthy
     environment:
       TZ: Asia/Seoul
-      # DB 물리 분리 3단계 - performance-service 전용 스키마/계정 (init-databases.sql이 만듦)
-      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/reseat_performance?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_0900_ai_ci&serverTimezone=Asia/Seoul&useSSL=false&allowPublicKeyRetrieval=true
+      # DB 물리 분리 4단계 - performance-service 전용 MySQL 인스턴스(init-performance.sql이 만듦)
+      SPRING_DATASOURCE_URL: jdbc:mysql://db-performance:3306/reseat_performance?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_0900_ai_ci&serverTimezone=Asia/Seoul&useSSL=false&allowPublicKeyRetrieval=true
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       SPRING_ELASTICSEARCH_URIS: http://elasticsearch:9200
@@ -386,7 +410,8 @@ networks:
     driver: bridge
 
 volumes:
-  reseat-mysql-data:
   reseat-mysql-order-data:
   reseat-mysql-payment-data:
+  reseat-mysql-performance-data:
+  reseat-mysql-user-data:
   reseat-es-data:

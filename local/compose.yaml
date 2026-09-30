@@ -1,32 +1,6 @@
 services:
-  # performance-service(reseat_performance), user-service(reseat_user) 전용 - 같은 인스턴스,
-  # 스키마만 분리(3단계). order/payment는 DB 물리 분리 2단계로 아래 mysql-order/mysql-payment
-  # 별도 인스턴스로 이미 승격됨 - 상세: Obsidian db_separation_plan.md
-  mysql:
-    image: mysql:8.4
-    container_name: kdt-mysql
-    ports:
-      - "3306:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: "1234"   # 각 서비스 application.properties의 값과 일치해야 함
-      TZ: Asia/Seoul
-    command:
-      - --default-time-zone=+09:00
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_0900_ai_ci
-      - --init-connect=SET NAMES utf8mb4
-    volumes:
-      - ../init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
-      - kdt-mysql-data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
-  # order-service 전용 MySQL 인스턴스(DB 물리 분리 2단계). 위 mysql 컨테이너와 완전히 별개 -
-  # 이 컨테이너가 죽어도 mysql-payment/mysql(성능/유저)은 영향 없음(장애 격리 실측 대상).
+  # order-service 전용 MySQL 인스턴스(DB 물리 분리 2단계). 다른 mysql-* 컨테이너와 완전히 별개 -
+  # 이 컨테이너가 죽어도 다른 서비스는 영향 없음(장애 격리 실측 대상).
   mysql-order:
     image: mysql:8.4
     container_name: kdt-mysql-order
@@ -67,6 +41,55 @@ services:
     volumes:
       - ../init-payment.sql:/docker-entrypoint-initdb.d/init-payment.sql:ro
       - kdt-mysql-payment-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # performance-service 전용 MySQL 인스턴스(DB 물리 분리 4단계 - 3단계까지는 mysql-order/
+  # mysql-payment와 같은 컨테이너를 공유했다가 이번에 완전히 별도 승격됨).
+  mysql-performance:
+    image: mysql:8.4
+    container_name: kdt-mysql-performance
+    ports:
+      - "3309:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: "1234"
+      TZ: Asia/Seoul
+    command:
+      - --default-time-zone=+09:00
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --init-connect=SET NAMES utf8mb4
+    volumes:
+      - ../init-performance.sql:/docker-entrypoint-initdb.d/init-performance.sql:ro
+      - kdt-mysql-performance-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # user-service 전용 MySQL 인스턴스(DB 물리 분리 4단계).
+  mysql-user:
+    image: mysql:8.4
+    container_name: kdt-mysql-user
+    ports:
+      - "3310:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: "1234"
+      TZ: Asia/Seoul
+    command:
+      - --default-time-zone=+09:00
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --init-connect=SET NAMES utf8mb4
+    volumes:
+      - ../init-user.sql:/docker-entrypoint-initdb.d/init-user.sql:ro
+      - kdt-mysql-user-data:/var/lib/mysql
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
@@ -124,8 +147,9 @@ services:
       - "5601:5601"
 
 volumes:
-  kdt-mysql-data:
   kdt-mysql-order-data:
   kdt-mysql-payment-data:
+  kdt-mysql-performance-data:
+  kdt-mysql-user-data:
   kdt-redis-data:
   kdt-es-data:
